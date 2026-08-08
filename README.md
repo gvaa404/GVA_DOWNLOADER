@@ -1,105 +1,226 @@
-# 🎬 GVA Downloader v2.0
+# GVA Downloader v2.0
 
-Welcome to **GVA Downloader**! This is a simple, colorful terminal application that lets you easily download videos, audio, and entire playlists straight to your phone or computer. 
+A polished, terminal-based media downloader built on [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [Rich](https://github.com/Textualize/rich). Fully **portable** — everything the app owns lives inside its own folder, and it runs the same way on **Windows, Linux, macOS, and Android (Termux)**.
 
-Powered by `yt-dlp` and `rich`, it provides a beautiful interface with live progress bars right in your terminal. This new v2.0 is fully portable and supports a direct-URL command-line workflow!
+## Features
 
----
+- 🎬 Video downloads with dynamic, real quality options (up to 4K where available)
+- 🎵 Audio downloads in MP3, M4A, AAC, FLAC, OGG, WAV
+- 📜 Playlist downloads (entire or a custom range), as video or audio
+- 🔍 In-app YouTube search
+- 📁 Batch downloads (pasted URLs or a text file)
+- ℹ️ Media information without downloading
+- 🕘 Download history with search, delete, and "open location"
+- ⚙️ Configurable download folder, quality defaults, theme, overwrite behavior
+- 🛠️ Engine maintenance: update yt-dlp, clear caches
+- 🔗 **Direct URL / share-to-download**: run with a URL as an argument, or share a video straight from the YouTube app on Android
+- 📂 One portable application folder — copy it anywhere and it keeps working
 
-## ✨ Features
+## Requirements
 
-* **Portable Application Folder:** All settings, history, logs, and downloads stay in the same folder as the script.
-* **Direct URL Workflow:** Call the script directly from the command line: `python gva_downloader.py "<url>"`.
-* **Video & Audio:** Download in the exact quality you want (from 144p up to 4K/8K, or MP3/M4A/FLAC).
-* **Playlists & Batch:** Download full playlists, specific ranges, or batch process multiple links.
-* **Metadata & SponsorBlock:** Automatically adds thumbnails (cover art) and skips sponsor segments.
-* **Beautiful Interface:** Easy-to-use numbered menus and visual progress bars.
+- Python 3.9+
+- [FFmpeg](https://ffmpeg.org/) (for merging video/audio, converting audio formats, embedding thumbnails)
+- Python packages: `yt-dlp`, `rich`
 
----
+## Windows Installation
 
-## 📱 How to Install & Run on Android (Termux)
+```bat
+git clone <repository-url> "GVA Downloader"
+cd "GVA Downloader"
+install_windows.bat
+```
 
-**Step 1: Install Termux**
-Download the Termux app from [F-Droid](https://f-droid.org/en/packages/com.termux/). Do not use the Google Play Store version, as it is outdated.
+Or manually:
 
-**Step 2: Run the Setup Script**
-Open Termux, navigate to the folder where you saved the project, make the script executable, and run it:
-`chmod +x setup_termux.sh`
-`./setup_termux.sh`
+```bat
+python -m pip install -U yt-dlp rich
+python gva_downloader.py
+```
 
-This script will automatically request storage permissions, update your system, install required packages (Python, Git, FFmpeg), and install the Python libraries (`yt-dlp`, `rich`). Finally, it will launch the downloader.
+Install FFmpeg on Windows by downloading a build from https://ffmpeg.org/download.html and adding its `bin` folder to your system PATH.
 
-**Future Runs:**
-Once setup is complete, you can start the application anytime by navigating to the project folder and running:
-`cd src`
-`python gva_downloader_2.0.py`
+## Termux Installation
 
----
+```bash
+pkg install git -y
+git clone <repository-url> "GVA Downloader"
+cd "GVA Downloader"
+bash install_termux.sh
+```
 
-## 💻 How to Install & Run on Windows
+Or manually:
 
-**Step 1: Install Python & FFmpeg**
-1. **Python**: Go to [python.org/downloads](https://www.python.org/downloads/) and install the latest version. **CRITICAL:** Check the box that says **"Add Python to PATH"** before clicking install.
-2. **FFmpeg**: Open PowerShell as Administrator and run: `winget install "FFmpeg (Essentials Build)"`
+```bash
+pkg install python ffmpeg -y
+pip install -U yt-dlp rich
+termux-setup-storage
+python gva_downloader.py
+```
 
-**Step 2: Run the Setup Batch File**
-Download this project and extract it. Double-click the `setup_windows.bat` file. 
+## First Run
 
-This batch file will automatically install the necessary Python libraries (`yt-dlp` and `rich`) and then launch the application for you.
+```bash
+python gva_downloader.py
+```
 
-**Future Runs:**
-You can just double-click `setup_windows.bat` anytime to run the app, or manually run:
-`cd src`
-`python gva_downloader_2.0.py`
+On first run GVA automatically creates everything it needs inside the application folder:
 
-**Step 3: Configure Windows Download Folder**
-By default, downloads go to the `src/downloads/` folder. You can type `8` for Settings, then `1` to change your Download Folder to an absolute path (like `C:\Users\YourName\Downloads`).
+```
+downloads/videos/
+downloads/audios/
+config/settings.json
+history/history.json
+logs/gva_downloader.log
+cache/
+temp/
+```
 
----
+No manual setup is required.
 
-## 🎮 How to Use the Menu
+## Normal Usage
 
-Type the number of the action you want to perform and press Enter:
+Just run the script and use the on-screen menu:
 
-| Option | Name | Description |
-| :--- | :--- | :--- |
-| **1** | 🎬 Download Video | Paste a link and choose your video quality. |
-| **2** | 🎵 Download Audio | Extract music/audio and choose your format (MP3, FLAC, etc.). |
-| **3** | 📜 Playlist Download | Paste a playlist link to grab multiple files at once. |
-| **4** | 🔍 Search YouTube & Download | Search keywords directly without opening a browser. |
-| **5** | 📁 Batch Downloads | Download multiple URLs from a list or file. |
-| **6** | ℹ️ Media Information | Paste a link to see details without downloading. |
-| **7** | 🕘 Download History | See a list of everything you've downloaded previously. |
-| **8** | ⚙️ Settings | Change where files are saved, your default quality, or app themes. |
-| **9** | 🛠️ Engine Maintenance | Update yt-dlp or clear application cache. |
-| **10** | ❓ Help | View helpful hints and feature descriptions. |
-| **11** | 📖 About | View app version and author information. |
-| **12** | 🚪 Exit | Close the downloader safely. |
+```bash
+python gva_downloader.py
+```
 
----
+```
+1. 🎬 Download Video
+2. 🎵 Download Audio
+3. 📜 Playlist Download
+4. 🔍 Search YouTube
+5. 📁 Batch Downloads
+6. ℹ️ Media Information
+7. 🕘 Download History
+8. ⚙️ Settings
+9. 🛠️ Engine Maintenance
+10. ❓ Help
+11. 📖 About
+12. 🚪 Exit
+```
 
-## 🚀 Command-Line Usage
+## Direct URL Usage
 
-You can bypass the menu by using command-line arguments:
-- `python src/gva_downloader_2.0.py "<url>"` : Opens a quick download menu for the URL.
-- `python src/gva_downloader_2.0.py --video "<url>"` : Quick video download.
-- `python src/gva_downloader_2.0.py --audio "<url>"` : Quick audio download.
-- `python src/gva_downloader_2.0.py --info "<url>"` : Show media info only.
-- `python src/gva_downloader_2.0.py --history` : Print download history and exit.
-- `python src/gva_downloader_2.0.py --settings` : Open the settings menu and exit.
+Pass a URL straight from the command line and skip the main menu:
 
----
+```bash
+python gva_downloader.py "https://www.youtube.com/watch?v=XXXXXXXXXXX"
+python gva_downloader.py --url "https://youtu.be/XXXXXXXXXXX"
+```
 
-## 🛠️ Troubleshooting & Logs
+This opens a quick menu:
 
-If something goes wrong or a download fails, GVA Downloader keeps log files to help you figure out why. Because this is a **portable** application, you will find settings and logs in the same folder as the script:
+```
+1. Download Video
+2. Download Audio
+3. Download Best Quality
+4. View Information
+5. Cancel
+```
 
-* **Settings File:** `config/settings.json`
-* **Error Logs:** `logs/gva_downloader.log`
-* **History:** `history/history.json`
+Other quick command-line options:
 
----
+```bash
+python gva_downloader.py --video URL      # jump straight to a video-quality prompt
+python gva_downloader.py --audio URL      # jump straight to an audio-format prompt
+python gva_downloader.py --info URL       # show media info only, no download
+python gva_downloader.py --history        # print download history and exit
+python gva_downloader.py --settings       # open the settings menu and exit
+python gva_downloader.py --help           # show all options
+```
 
-## 📄 License
+Supported URL forms include standard YouTube links, `youtu.be` short links, and YouTube Shorts — anything yt-dlp's extractor system recognizes.
 
-This project is open-source and free to use under the MIT License.
+## YouTube Share → Termux → GVA Downloader
+
+You can share a video directly from the YouTube app to GVA Downloader, with no copy-pasting:
+
+1. Run `install_termux.sh` and answer **y** when asked about the share workflow (or set it up manually, below).
+2. In the YouTube app, tap **Share** on any video, then choose **Termux**.
+3. Termux launches `~/bin/termux-url-opener`, which passes the shared URL straight to GVA Downloader's quick download menu.
+
+**Manual setup:**
+
+```bash
+mkdir -p ~/bin
+cat > ~/bin/termux-url-opener << 'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+python "/path/to/GVA Downloader/gva_downloader.py" "$1"
+EOF
+chmod +x ~/bin/termux-url-opener
+```
+
+Replace `/path/to/GVA Downloader` with the actual path where you cloned the project. If your downloads need to be visible outside Termux (e.g. in your phone's gallery/Downloads app), run `termux-setup-storage` once and point the **Download Folder** setting at a path under `~/storage/downloads/`.
+
+## Changing Download Folder
+
+Open **Settings → Download Folder** (menu option 8 → 1), or run:
+
+```bash
+python gva_downloader.py --settings
+```
+
+You can enter:
+
+- A **relative** path (default: `downloads`) — resolved inside the GVA Downloader folder, keeping the project fully portable.
+- An **absolute** path (e.g. `D:\My Downloads\GVA` or `/storage/emulated/0/Download/GVA`) — GVA will create `videos/` and `audios/` subfolders there.
+
+Application data (`config/`, `history/`, `logs/`, `cache/`, `temp/`) **always** stays inside the GVA Downloader folder, even if you move your downloads elsewhere.
+
+## Folder Structure
+
+```
+GVA Downloader/
+│
+├── gva_downloader.py
+├── README.md
+├── install_windows.bat
+├── install_termux.sh
+│
+├── downloads/
+│   ├── videos/
+│   └── audios/
+│
+├── config/
+│   └── settings.json
+│
+├── history/
+│   └── history.json
+│
+├── logs/
+│   └── gva_downloader.log
+│
+├── cache/
+└── temp/
+```
+
+Copy the entire `GVA Downloader` folder to another machine or another location, and your settings, history, and logs travel with it — nothing is stored outside this folder.
+
+## Updating yt-dlp
+
+From the app: **Engine Maintenance → Update yt-dlp library** (menu option 9 → 1).
+
+Or manually:
+
+```bash
+pip install -U yt-dlp
+```
+
+Update yt-dlp regularly — YouTube and other sites change frequently, and an outdated yt-dlp is the most common cause of extraction failures.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `FFmpeg is not installed` | Windows: install from ffmpeg.org and add to PATH. Termux: `pkg install ffmpeg`. Linux: `sudo apt install ffmpeg`. macOS: `brew install ffmpeg`. |
+| Download fails / extraction error | Update yt-dlp (Engine Maintenance → Update, or `pip install -U yt-dlp`). |
+| "This video is private/age-restricted" | GVA cannot bypass authentication or access controls — you need to be authorized to access that content. |
+| Files not showing on my phone | Make sure `termux-setup-storage` has been run and your Download Folder setting points to a path under `~/storage/`. |
+| Duplicate file prompt keeps appearing | Turn on **Overwrite Existing Files** in Settings if you always want to overwrite. |
+
+Technical error details are always written to `logs/gva_downloader.log`.
+
+## Responsible Use
+
+GVA Downloader uses yt-dlp as its download engine and performs no custom scraping. It does not bypass DRM, authentication, or paywalls. Only use it to download content you are authorized to access and download, and respect the terms of service of the sites you use it with.
