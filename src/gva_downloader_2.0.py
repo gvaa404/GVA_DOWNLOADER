@@ -3,32 +3,44 @@
 GVA Downloader
 ==============
 
-A premium terminal-based media downloader for Android/Termux.
+A premium terminal-based media downloader for Windows, Linux, macOS and
+Android/Termux.
 
 Author   : Jeevanantham K
 Engine   : yt-dlp
 Language : Python
-Platform : Android (Termux)
-Version  : 2.0 (Enhanced UX & Dynamic Formats)
+Platform : Windows / Linux / macOS / Android (Termux)
+Version  : 2.0 (Portable Application Folder + Direct URL / Share Workflow)
+
+--------------------------------------------------------------------------
+WHAT CHANGED IN v2.0
+--------------------------------------------------------------------------
+* The application is now fully "portable": every file GVA owns (settings,
+  history, logs, cache, temp) lives inside the same folder as this script
+  (APP_DIR), instead of a hidden folder in the user's home directory.
+* Downloaded videos and audio are separated into "downloads/videos" and
+  "downloads/audios" (or a custom root the user picks in Settings).
+* New direct-URL / command-line workflow so the script can be invoked as
+  `python gva_downloader.py "<url>"` (also used by the Termux share sheet).
+* Safer filename sanitizer, duplicate-file handling, startup dependency
+  check, and a fixed SponsorBlock post-processor pipeline.
+--------------------------------------------------------------------------
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
-try:
-    import requests
-except ImportError:
-    requests = None  # type: ignore
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from rich.console import Console
@@ -48,14 +60,33 @@ try:
     from rich.text import Text
     from rich.rule import Rule
     from rich import box
+    RICH_AVAILABLE = True
 except ImportError:
-    print("Rich is not installed. Install it with: pip install rich")
-    sys.exit(1)
+    RICH_AVAILABLE = False
 
 try:
     import yt_dlp
+    YTDLP_AVAILABLE = True
 except ImportError:
     yt_dlp = None  # type: ignore
+    YTDLP_AVAILABLE = False
+
+
+# =====================================================================
+# EARLY DEPENDENCY GUARD
+# =====================================================================
+# Rich is required to render anything at all, so if it's missing we print
+# a plain-text message (no Rich formatting available yet) and exit instead
+# of crashing with an ImportError traceback.
+
+if not RICH_AVAILABLE:
+    print("=" * 60)
+    print("GVA Downloader - Missing dependency: 'rich'")
+    print("=" * 60)
+    print("Install dependencies with:")
+    print("    pip install -U yt-dlp rich")
+    print("(Termux users may need: pkg install python && pip install -U yt-dlp rich)")
+    sys.exit(1)
 
 
 # =====================================================================
@@ -67,13 +98,28 @@ APP_AUTHOR = "Jeevanantham K"
 APP_VERSION = "2.0"
 APP_ENGINE = "yt-dlp"
 APP_LANGUAGE = "Python"
-APP_PLATFORM = "Android (Termux)"
+APP_PLATFORM = "Windows / Linux / macOS / Android (Termux)"
 
-DEFAULT_BASE_DIR = Path.home() / "storage" / "downloads" / "GVA Downloader"
-CONFIG_DIR = Path.home() / ".gva_downloader"
+# ---------------------------------------------------------------------
+# PORTABLE APPLICATION ROOT
+# ---------------------------------------------------------------------
+# Everything GVA Downloader owns lives inside this folder. Never write
+# GVA's own config/history/logs/cache to the user's home directory or any
+# OS-specific hidden folder.
+APP_DIR: Path = Path(__file__).resolve().parent
+
+CONFIG_DIR = APP_DIR / "config"
+HISTORY_DIR = APP_DIR / "history"
+LOGS_DIR = APP_DIR / "logs"
+CACHE_DIR = APP_DIR / "cache"
+TEMP_DIR = APP_DIR / "temp"
+DEFAULT_DOWNLOADS_DIR = APP_DIR / "downloads"
+
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
-HISTORY_FILE = CONFIG_DIR / "history.json"
-LOG_FILE = CONFIG_DIR / "gva_downloader.log"
+HISTORY_FILE = HISTORY_DIR / "history.json"
+LOG_FILE = LOGS_DIR / "gva_downloader.log"
+
+APP_OWNED_DIRS = [CONFIG_DIR, HISTORY_DIR, LOGS_DIR, CACHE_DIR, TEMP_DIR, DEFAULT_DOWNLOADS_DIR]
 
 LOGO = r"""
 [bold cyan]
@@ -89,6 +135,13 @@ LOGO = r"""
 
 AUDIO_FORMATS = ["MP3", "M4A", "AAC", "FLAC", "OGG", "WAV"]
 
+# Windows reserved device names that are unsafe as filenames.
+WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
 console = Console()
 
 
@@ -97,24 +150,29 @@ console = Console()
 # =====================================================================
 
 def setup_logging() -> logging.Logger:
-    """Configure and return the application logger."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger("gva_downloader")
-    logger.setLevel(logging.DEBUG)
-    if not logger.handlers:
+    """Configure and return the application logger.
+
+    Logs are written ONLY to logs/gva_downloader.log inside APP_DIR.
+    """
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    logger_obj = logging.getLogger("gva_downloader")
+    logger_obj.setLevel(logging.DEBUG)
+    if not logger_obj.handlers:
         try:
-            handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+            handler: logging.Handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
         except OSError:
             handler = logging.StreamHandler(sys.stderr)
         formatter = logging.Formatter(
             "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
         )
         handler.setFormatter(formatter)
-        logger.addHandler(handler)
-    return logger
+        logger_obj.addHandler(handler)
+    return logger_obj
 
 
 logger = setup_logging()
+logger.info("=" * 50)
+logger.info("GVA Downloader v%s starting up (APP_DIR=%s)", APP_VERSION, APP_DIR)
 
 
 # =====================================================================
@@ -165,12 +223,46 @@ class Utilities:
             return "Unknown"
 
     @staticmethod
-    def sanitize_filename(name: str) -> str:
-        """Remove characters unsafe for filesystem paths."""
+    def sanitize_filename(name: str, max_length: int = 150) -> str:
+        """Produce a filesystem-safe filename while keeping it readable.
+
+        Handles: reserved characters, Windows reserved device names,
+        unicode, trailing dots/spaces, and overly long names.
+        """
+        if not name:
+            return "Untitled"
+
+        # Remove/replace characters invalid on Windows (also unsafe elsewhere).
         invalid = '<>:"/\\|?*'
-        for ch in invalid:
-            name = name.replace(ch, "_")
-        return name.strip()
+        cleaned = "".join("_" if ch in invalid else ch for ch in name)
+
+        # Strip control characters but keep unicode letters/symbols intact.
+        cleaned = "".join(ch for ch in cleaned if ch.isprintable())
+
+        # Collapse whitespace.
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+        # Remove trailing dots/spaces (illegal on Windows).
+        cleaned = cleaned.rstrip(". ")
+
+        if not cleaned:
+            cleaned = "Untitled"
+
+        # Avoid Windows reserved device names (CON, PRN, COM1, ...).
+        stem = cleaned.split(".")[0].upper()
+        if stem in WINDOWS_RESERVED_NAMES:
+            cleaned = f"_{cleaned}"
+
+        # Enforce a sane max length while keeping the file extension if any.
+        if len(cleaned) > max_length:
+            if "." in cleaned[-6:]:
+                name_part, _, ext_part = cleaned.rpartition(".")
+                keep = max_length - len(ext_part) - 1
+                cleaned = f"{name_part[:keep]}.{ext_part}"
+            else:
+                cleaned = cleaned[:max_length]
+
+        return cleaned or "Untitled"
 
     @staticmethod
     def ensure_dir(path: Path) -> bool:
@@ -192,10 +284,16 @@ class Utilities:
 
     @staticmethod
     def open_folder(path: Path) -> bool:
-        """Attempt to open a folder using termux-open or xdg-open."""
+        """Attempt to open a folder using the platform's file manager."""
         try:
             if Utilities.which("termux-open"):
                 subprocess.run(["termux-open", str(path)], check=False)
+                return True
+            if sys.platform.startswith("win"):
+                os.startfile(str(path))  # type: ignore[attr-defined]
+                return True
+            if sys.platform == "darwin" and Utilities.which("open"):
+                subprocess.run(["open", str(path)], check=False)
                 return True
             if Utilities.which("xdg-open"):
                 subprocess.run(["xdg-open", str(path)], check=False)
@@ -205,6 +303,24 @@ class Utilities:
         except Exception as exc:
             logger.error("Failed to open folder: %s", exc)
             return False
+
+    @staticmethod
+    def ensure_app_directories() -> None:
+        """Create every folder GVA Downloader owns, if missing."""
+        for d in APP_OWNED_DIRS:
+            Utilities.ensure_dir(d)
+        Utilities.ensure_dir(DEFAULT_DOWNLOADS_DIR / "videos")
+        Utilities.ensure_dir(DEFAULT_DOWNLOADS_DIR / "audios")
+
+    @staticmethod
+    def check_dependencies() -> Dict[str, bool]:
+        """Return availability status of Python, yt-dlp, Rich and FFmpeg."""
+        return {
+            "Python": True,
+            "yt-dlp": YTDLP_AVAILABLE,
+            "Rich": RICH_AVAILABLE,
+            "FFmpeg": Utilities.which("ffmpeg") is not None,
+        }
 
 
 # =====================================================================
@@ -265,6 +381,8 @@ class Theme:
 class Validator:
     """Validation routines for user input."""
 
+    YOUTUBE_HOSTS = ("youtube.com", "youtu.be", "m.youtube.com", "music.youtube.com")
+
     @staticmethod
     def is_valid_url(url: str) -> bool:
         """Basic structural validation for a URL string."""
@@ -296,7 +414,19 @@ class Validator:
 
 @dataclass
 class AppSettings:
-    download_folder: str = str(DEFAULT_BASE_DIR)
+    """Persisted user settings (config/settings.json).
+
+    `download_folder` may be either:
+      * a relative path (resolved against APP_DIR), e.g. "downloads" -> the
+        default, portable behaviour, or
+      * an absolute path the user picked in Settings, e.g. "D:\\My Downloads\\GVA".
+
+    In both cases GVA creates "videos" and "audios" subfolders inside it.
+    Application data (config/history/logs/cache/temp) NEVER moves — only the
+    download root changes.
+    """
+
+    download_folder: str = "downloads"
     default_video_quality: str = "Best Available"
     default_audio_quality: str = "Best Available"
     theme: str = "default"
@@ -305,6 +435,8 @@ class AppSettings:
 
 
 class Settings:
+    """Loads/saves settings.json inside APP_DIR/config."""
+
     def __init__(self) -> None:
         self.data = AppSettings()
         self.load()
@@ -331,20 +463,58 @@ class Settings:
             logger.error("Failed to save settings: %s", exc)
             return False
 
-    def get_download_folder(self) -> Path:
-        return Path(self.data.download_folder).expanduser()
+    def reset(self) -> None:
+        """Restore default settings and persist them."""
+        self.data = AppSettings()
+        self.save()
+
+    def get_download_root(self) -> Path:
+        """Resolve the configured download root to an absolute Path.
+
+        A relative value (the default "downloads") is resolved against
+        APP_DIR so the project stays portable. An absolute value (a custom
+        folder the user picked) is used as-is.
+        """
+        raw = Path(self.data.download_folder).expanduser()
+        if raw.is_absolute():
+            return raw
+        return (APP_DIR / raw).resolve()
+
+    def get_video_dir(self) -> Path:
+        path = self.get_download_root() / "videos"
+        Utilities.ensure_dir(path)
+        return path
+
+    def get_audio_dir(self) -> Path:
+        path = self.get_download_root() / "audios"
+        Utilities.ensure_dir(path)
+        return path
+
+    def set_download_root(self, new_root: str) -> None:
+        """Change the download root and make sure videos/audios exist."""
+        self.data.download_folder = new_root
+        self.save()
+        Utilities.ensure_dir(self.get_video_dir())
+        Utilities.ensure_dir(self.get_audio_dir())
 
 
 @dataclass
 class HistoryEntry:
+    """A single download-history record (history/history.json)."""
+
     date: str
     title: str
+    url: str
     website: str
-    resolution: str
+    type: str          # "video" or "audio"
+    quality: str
+    format: str
     output_path: str
 
 
 class History:
+    """Loads/saves history.json inside APP_DIR/history."""
+
     def __init__(self) -> None:
         self.entries: List[HistoryEntry] = []
         self.load()
@@ -353,16 +523,27 @@ class History:
         try:
             if HISTORY_FILE.exists():
                 raw = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-                self.entries = [HistoryEntry(**item) for item in raw]
+                self.entries = [self._coerce_entry(item) for item in raw]
         except Exception as exc:
             logger.error("Failed to load history: %s", exc)
             self.entries = []
 
+    @staticmethod
+    def _coerce_entry(item: Dict[str, Any]) -> HistoryEntry:
+        """Build a HistoryEntry, filling in defaults for missing fields
+        (keeps compatibility with older/partial history records)."""
+        defaults = {
+            "date": "", "title": "Unknown", "url": "", "website": "Unknown",
+            "type": "video", "quality": "", "format": "", "output_path": "",
+        }
+        merged = {**defaults, **item}
+        return HistoryEntry(**{k: merged[k] for k in defaults})
+
     def save(self) -> bool:
         try:
-            Utilities.ensure_dir(CONFIG_DIR)
+            Utilities.ensure_dir(HISTORY_DIR)
             HISTORY_FILE.write_text(
-                json.dumps([asdict(e) for e in self.entries], indent=2),
+                json.dumps([asdict(e) for e in self.entries], indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
             return True
@@ -370,16 +551,21 @@ class History:
             logger.error("Failed to save history: %s", exc)
             return False
 
-    def add(self, title: str, website: str, resolution: str, output_path: str) -> None:
+    def add(self, title: str, url: str, website: str, media_type: str,
+             quality: str, fmt: str, output_path: str) -> None:
         entry = HistoryEntry(
             date=time.strftime("%Y-%m-%d %H:%M:%S"),
             title=title,
+            url=url,
             website=website,
-            resolution=resolution,
+            type=media_type,
+            quality=quality,
+            format=fmt,
             output_path=output_path,
         )
         self.entries.append(entry)
         self.save()
+        logger.info("History added: %s | %s | %s", title, media_type, output_path)
 
     def delete(self, index: int) -> bool:
         if 0 <= index < len(self.entries):
@@ -387,6 +573,13 @@ class History:
             self.save()
             return True
         return False
+
+    def search(self, query: str) -> List[Tuple[int, HistoryEntry]]:
+        query = query.lower().strip()
+        return [
+            (idx, e) for idx, e in enumerate(self.entries)
+            if query in e.title.lower() or query in e.website.lower() or query in e.url.lower()
+        ]
 
     def clear(self) -> None:
         self.entries = []
@@ -413,6 +606,7 @@ class UI:
         info.add_row("Author", APP_AUTHOR)
         info.add_row("Engine", APP_ENGINE)
         info.add_row("Version", APP_VERSION)
+        info.add_row("App Folder", str(APP_DIR))
         self.console.print(Align.center(info))
         self.console.print()
 
@@ -482,6 +676,15 @@ class UI:
             transient=False,
         )
 
+    def dependency_check_table(self, statuses: Dict[str, bool]) -> Table:
+        table = Table(title="GVA Downloader Environment Check", box=box.ROUNDED,
+                      border_style=self.theme.style("primary"))
+        table.add_column("Component", style=f"bold {self.theme.style('secondary')}")
+        table.add_column("Status")
+        for name, ok in statuses.items():
+            table.add_row(name, "✅" if ok else "❌")
+        return table
+
 
 # =====================================================================
 # YT-DLP ERROR TRANSLATOR & HELPER
@@ -501,6 +704,12 @@ class YtDlpErrorTranslator:
             return "This website is not supported by yt-dlp."
         if "ffmpeg" in text and ("not found" in text or "not installed" in text):
             return "FFmpeg is not installed. Required for processing media."
+        if "network" in text or "urlopen" in text or "timed out" in text:
+            return "Network error. Check your internet connection and try again."
+        if "permission denied" in text:
+            return "Permission denied while writing the file. Check folder permissions."
+        if "no space left" in text or "disk full" in text:
+            return "Disk is full. Free up some space and try again."
         return f"An error occurred: {exc}"
 
 
@@ -560,13 +769,14 @@ class VideoInfo:
 
     def extract(self, url: str) -> Optional[Dict[str, Any]]:
         if yt_dlp is None:
-            self.ui.error("yt-dlp is not installed.")
+            self.ui.error("yt-dlp is not installed. Run: pip install -U yt-dlp")
             return None
         opts = {
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
             "noplaylist": True,
+            "cachedir": str(CACHE_DIR),
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -607,6 +817,7 @@ class VideoInfo:
             ", ".join(f"{int(a)}kbps" for a in audio_formats) if audio_formats else "Unknown",
         )
         table.add_row("Website", str(info.get("extractor_key", "Unknown")))
+        table.add_row("URL", url)
 
         self.ui.console.print(Panel(table, title="🎬 Media Information", border_style=self.ui.theme.style("primary")))
         return info
@@ -617,31 +828,62 @@ class VideoInfo:
 # =====================================================================
 
 class ProgressHookBridge:
+    """Bridges yt-dlp's progress_hooks into a SINGLE Rich progress line.
+
+    A video download typically pulls a separate video-only stream and
+    audio-only stream before merging them, and a playlist reuses the same
+    hook across many items. Rather than creating a new task per filename
+    (which stacks up multiple bars), this bridge keeps exactly one task and
+    simply relabels/resets it whenever yt-dlp moves on to a new file, so the
+    UI always shows a single, clean progress line.
+    """
+
     def __init__(self, progress: Progress, ui: UI) -> None:
         self.progress = progress
         self.ui = ui
-        self.task_ids: Dict[str, Any] = {}
+        self.task_id: Optional[Any] = None
+        self.current_key: Optional[str] = None
+
+    @staticmethod
+    def _short_name(filename: str) -> str:
+        short_name = Path(filename).name
+        if len(short_name) > 35:
+            short_name = short_name[:32] + "..."
+        return short_name
 
     def hook(self, d: Dict[str, Any]) -> None:
         filename = d.get("filename", "download")
-        key = filename
         status = d.get("status")
 
         if status == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             downloaded = d.get("downloaded_bytes", 0)
-            if key not in self.task_ids:
-                short_name = Path(filename).name
-                if len(short_name) > 35:
-                    short_name = short_name[:32] + "..."
-                self.task_ids[key] = self.progress.add_task(
-                    short_name, total=total if total else None
+
+            if self.task_id is None:
+                # First file of this download: create the one and only task.
+                self.current_key = filename
+                self.task_id = self.progress.add_task(
+                    self._short_name(filename), total=total if total else None
                 )
-            task_id = self.task_ids[key]
+            elif filename != self.current_key:
+                # A new file started (e.g. switched from video-only stream to
+                # audio-only stream). Reset the SAME line instead of adding
+                # another one.
+                self.current_key = filename
+                self.progress.reset(self.task_id, total=total if total else None)
+                self.progress.update(self.task_id, description=self._short_name(filename))
+
             if total:
-                self.progress.update(task_id, completed=downloaded, total=total)
+                self.progress.update(self.task_id, completed=downloaded, total=total)
             else:
-                self.progress.update(task_id, completed=downloaded)
+                self.progress.update(self.task_id, completed=downloaded)
+
+        elif status == "finished" and self.task_id is not None:
+            # Snap to 100% so the single line reads as complete before the
+            # next file (if any) resets it.
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            if total:
+                self.progress.update(self.task_id, completed=total, total=total)
 
 
 # =====================================================================
@@ -649,6 +891,15 @@ class ProgressHookBridge:
 # =====================================================================
 
 class BaseDownloader:
+    """Shared behaviour for all downloader flows.
+
+    media_kind must be set by subclasses to "video" or "audio" so the
+    correct app-owned subfolder (downloads/videos or downloads/audios) is
+    used automatically.
+    """
+
+    media_kind: str = "video"
+
     def __init__(self, ui: UI, settings: Settings, history: History) -> None:
         self.ui = ui
         self.settings = settings
@@ -656,13 +907,27 @@ class BaseDownloader:
 
     def check_ffmpeg(self) -> bool:
         if Utilities.which("ffmpeg") is None:
-            self.ui.error("FFmpeg is not installed. Install it with: pkg install ffmpeg")
+            self.ui.error("FFmpeg is not installed.")
+            if sys.platform.startswith("win"):
+                self.ui.info("Install FFmpeg on Windows: download from https://ffmpeg.org/download.html "
+                              "and add its 'bin' folder to your PATH.")
+            elif shutil.which("termux-info") or "com.termux" in os.environ.get("PREFIX", ""):
+                self.ui.info("Install FFmpeg on Termux: pkg install ffmpeg")
+            else:
+                self.ui.info("Install FFmpeg with your package manager, e.g. 'sudo apt install ffmpeg' "
+                              "or 'brew install ffmpeg'.")
             return False
         return True
 
+    def default_output_folder(self) -> Path:
+        """Return downloads/videos or downloads/audios based on media_kind."""
+        if self.media_kind == "audio":
+            return self.settings.get_audio_dir()
+        return self.settings.get_video_dir()
+
     def ask_output_folder(self) -> Path:
-        default = str(self.settings.get_download_folder())
-        self.ui.console.print(f"[muted]Default Folder: {default}[/]")
+        default = str(self.default_output_folder())
+        self.ui.console.print(f"[{self.ui.theme.style('muted')}]Default Folder: {default}[/]")
         use_default = Confirm.ask("Use default folder?", default=True)
         if use_default:
             folder = Path(default)
@@ -704,12 +969,48 @@ class BaseDownloader:
                 return label, str(abr) if abr else "320"
         return "Best Available (320 kbps)", "320"
 
+    def resolve_duplicate(self, folder: Path, title: str, likely_exts: List[str]) -> Optional[str]:
+        """Check whether a file with this title already exists in `folder`.
+
+        Returns:
+          * a (possibly new) filename STEM to use, or
+          * None if the user chose to skip/cancel this download.
+
+        Honors settings.overwrite_existing (silently overwrites, no prompt).
+        """
+        stem = Utilities.sanitize_filename(title)
+        existing = [folder / f"{stem}{ext}" for ext in likely_exts if (folder / f"{stem}{ext}").exists()]
+        if not existing:
+            return stem
+
+        if self.settings.data.overwrite_existing:
+            return stem
+
+        self.ui.warning(f"File already exists: {existing[0].name}")
+        choice = Prompt.ask(
+            "1) Skip  2) Overwrite  3) Save with a new filename  4) Cancel",
+            choices=["1", "2", "3", "4"],
+            default="1",
+        )
+        if choice == "1":
+            self.ui.info("Skipped (file already exists).")
+            return None
+        if choice == "2":
+            return stem
+        if choice == "3":
+            new_name = Prompt.ask("Enter a new filename (without extension)", default=f"{stem} (1)")
+            return Utilities.sanitize_filename(new_name)
+        self.ui.info("Cancelled.")
+        return None
+
 
 # =====================================================================
 # VIDEO DOWNLOADER
 # =====================================================================
 
 class Downloader(BaseDownloader):
+    media_kind = "video"
+
     def run(self, input_url: Optional[str] = None) -> None:
         self.ui.rule("Download Video")
         url = input_url or Prompt.ask("Paste Video URL")
@@ -726,22 +1027,38 @@ class Downloader(BaseDownloader):
         subtitles = Confirm.ask("Download subtitles?", default=False)
         embed_metadata = Confirm.ask("Embed metadata?", default=True)
         embed_thumbnail = Confirm.ask("Embed thumbnail?", default=False)
-        sponsorblock = Confirm.ask("Use SponsorBlock?", default=False)
+        sponsorblock = Confirm.ask("Use SponsorBlock (skip sponsor segments)?", default=False)
         output_folder = self.ask_output_folder()
 
         if embed_thumbnail or embed_metadata or sponsorblock:
             if not self.check_ffmpeg():
                 return
 
+        title = str(info.get("title", "video"))
+        stem = self.resolve_duplicate(output_folder, title, [".mp4", ".mkv", ".webm"])
+        if stem is None:
+            return
+
         fmt = "bestvideo+bestaudio/best" if height is None else f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
 
-        outtmpl = str(output_folder / self.settings.data.filename_format)
+        outtmpl = str(output_folder / f"{stem}.%(ext)s")
         postprocessors: List[Dict[str, Any]] = []
         if embed_metadata:
             postprocessors.append({"key": "FFmpegMetadata"})
         if embed_thumbnail:
             postprocessors.append({"key": "EmbedThumbnail"})
             postprocessors.append({"key": "FFmpegThumbnailsConvertor", "format": "jpg"})
+        if sponsorblock:
+            # Fixed in this version: sponsorblock was previously asked but never applied.
+            postprocessors.append({
+                "key": "SponsorBlock",
+                "categories": ["sponsor"],
+                "api": "https://sponsor.ajay.app",
+            })
+            postprocessors.append({
+                "key": "ModifyChapters",
+                "remove_sponsor_segments": ["sponsor"],
+            })
 
         opts: Dict[str, Any] = {
             "format": fmt,
@@ -753,7 +1070,9 @@ class Downloader(BaseDownloader):
             "writesubtitles": subtitles,
             "embedsubtitles": subtitles,
             "postprocessors": postprocessors,
-            "overwrites": self.settings.data.overwrite_existing,
+            "overwrites": True,  # duplicate handling is already resolved above
+            "cachedir": str(CACHE_DIR),
+            "paths": {"temp": str(TEMP_DIR)},
         }
 
         with self.ui.build_progress() as progress:
@@ -765,10 +1084,14 @@ class Downloader(BaseDownloader):
             self.ui.success(f"Downloaded: {path.name}")
             self.history.add(
                 title=str(actual_info.get("title", "Unknown")),
+                url=url,
                 website=str(actual_info.get("extractor_key", "Unknown")),
-                resolution=label,
+                media_type="video",
+                quality=label,
+                fmt=path.suffix.lstrip("."),
                 output_path=str(path),
             )
+            logger.info("Video download completed: %s -> %s", url, path)
 
     def _execute_download(self, url: str, opts: Dict[str, Any]) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
         try:
@@ -786,6 +1109,7 @@ class Downloader(BaseDownloader):
                 return final_path, info
         except Exception as exc:
             self.ui.error(YtDlpErrorTranslator.translate(exc))
+            logger.exception("Video download failed for %s", url)
             return None, None
 
 
@@ -794,6 +1118,8 @@ class Downloader(BaseDownloader):
 # =====================================================================
 
 class AudioDownloader(BaseDownloader):
+    media_kind = "audio"
+
     def run(self, input_url: Optional[str] = None) -> None:
         self.ui.rule("Download Audio")
         url = input_url or Prompt.ask("Paste Video/Audio URL")
@@ -816,6 +1142,11 @@ class AudioDownloader(BaseDownloader):
         embed_thumbnail = Confirm.ask("Embed thumbnail (cover art)?", default=False)
         output_folder = self.ask_output_folder()
 
+        title = str(info.get("title", "audio"))
+        stem = self.resolve_duplicate(output_folder, title, [f".{fmt_choice}"])
+        if stem is None:
+            return
+
         postprocessors: List[Dict[str, Any]] = [
             {
                 "key": "FFmpegExtractAudio",
@@ -828,7 +1159,7 @@ class AudioDownloader(BaseDownloader):
         if embed_thumbnail and fmt_choice in ("mp3", "m4a", "flac"):
             postprocessors.append({"key": "EmbedThumbnail"})
 
-        outtmpl = str(output_folder / self.settings.data.filename_format)
+        outtmpl = str(output_folder / f"{stem}.%(ext)s")
         opts: Dict[str, Any] = {
             "format": "bestaudio/best",
             "outtmpl": outtmpl,
@@ -836,7 +1167,9 @@ class AudioDownloader(BaseDownloader):
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-            "overwrites": self.settings.data.overwrite_existing,
+            "overwrites": True,  # duplicate handling is already resolved above
+            "cachedir": str(CACHE_DIR),
+            "paths": {"temp": str(TEMP_DIR)},
         }
 
         with self.ui.build_progress() as progress:
@@ -848,10 +1181,14 @@ class AudioDownloader(BaseDownloader):
             self.ui.success(f"Downloaded Audio: {path.name}")
             self.history.add(
                 title=str(actual_info.get("title", "Unknown")),
+                url=url,
                 website=str(actual_info.get("extractor_key", "Unknown")),
-                resolution=f"Audio ({bitrate_label})",
+                media_type="audio",
+                quality=f"{bitrate_label}",
+                fmt=fmt_choice,
                 output_path=str(path),
             )
+            logger.info("Audio download completed: %s -> %s", url, path)
 
     def _execute_download(self, url: str, opts: Dict[str, Any], ext: str) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
         try:
@@ -866,6 +1203,7 @@ class AudioDownloader(BaseDownloader):
                 return final_path, info
         except Exception as exc:
             self.ui.error(YtDlpErrorTranslator.translate(exc))
+            logger.exception("Audio download failed for %s", url)
             return None, None
 
 
@@ -890,8 +1228,7 @@ class PlaylistDownloader(BaseDownloader):
             return
 
         self.ui.success(f"Playlist detected with {len(entries)} items.")
-        
-        # Display sample entries
+
         table = Table(box=box.SIMPLE)
         table.add_column("#", style="bold")
         table.add_column("Title")
@@ -901,7 +1238,6 @@ class PlaylistDownloader(BaseDownloader):
             table.add_row("...", f"and {len(entries) - 10} more")
         self.ui.console.print(table)
 
-        # Playlist mode choices
         mode = Prompt.ask("Download scope", choices=["entire", "range"], default="entire")
         if mode == "range":
             range_str = Prompt.ask(f"Enter range (e.g. 1-{len(entries)})")
@@ -913,8 +1249,8 @@ class PlaylistDownloader(BaseDownloader):
         else:
             selected_indices = list(range(1, len(entries) + 1))
 
-        # MEDIA TYPE OPTION: Video vs Audio
         download_type = Prompt.ask("Download playlist as", choices=["video", "audio"], default="video")
+        self.media_kind = download_type
         output_folder = self.ask_output_folder()
 
         if download_type == "audio":
@@ -932,11 +1268,13 @@ class PlaylistDownloader(BaseDownloader):
                 ],
                 "quiet": True,
                 "overwrites": self.settings.data.overwrite_existing,
+                "cachedir": str(CACHE_DIR),
+                "paths": {"temp": str(TEMP_DIR)},
             }
 
-            self._process_playlist_loop(entries, selected_indices, opts, f"Audio ({bitrate}k)")
+            self._process_playlist_loop(entries, selected_indices, opts, f"Audio ({bitrate}k)", "audio", fmt_choice)
 
-        else: # Video download
+        else:  # Video download
             quality = Prompt.ask("Preferred max video quality", choices=["1080", "720", "480", "best"], default="best")
             fmt = "bestvideo+bestaudio/best" if quality == "best" else f"bestvideo[height<={quality}]+bestaudio/best"
 
@@ -946,16 +1284,19 @@ class PlaylistDownloader(BaseDownloader):
                 "merge_output_format": "mp4",
                 "quiet": True,
                 "overwrites": self.settings.data.overwrite_existing,
+                "cachedir": str(CACHE_DIR),
+                "paths": {"temp": str(TEMP_DIR)},
             }
 
-            self._process_playlist_loop(entries, selected_indices, opts, f"Video ({quality}p)")
+            self._process_playlist_loop(entries, selected_indices, opts, f"Video ({quality}p)", "video", "mp4")
 
-    def _process_playlist_loop(self, entries: List[Dict[str, Any]], indices: List[int], opts: Dict[str, Any], label: str) -> None:
+    def _process_playlist_loop(self, entries: List[Dict[str, Any]], indices: List[int], opts: Dict[str, Any],
+                                label: str, media_type: str, fmt: str) -> None:
         success = 0
         for i in indices:
             entry = entries[i - 1]
             entry_url = entry.get("url") or entry.get("webpage_url") or entry.get("id")
-            if not entry_url.startswith("http"):
+            if entry_url and not str(entry_url).startswith("http"):
                 entry_url = f"https://www.youtube.com/watch?v={entry_url}"
 
             title = entry.get("title", f"Track {i}")
@@ -969,14 +1310,20 @@ class PlaylistDownloader(BaseDownloader):
                         info = ydl.extract_info(entry_url, download=True)
                         if info:
                             success += 1
-                            self.history.add(title, "Playlist", label, str(opts["outtmpl"]))
+                            filename = ydl.prepare_filename(info)
+                            self.history.add(
+                                title=title, url=str(entry_url), website="Playlist",
+                                media_type=media_type, quality=label, fmt=fmt,
+                                output_path=filename,
+                            )
                 except Exception as exc:
-                    self.ui.error(f"Failed item {i}: {exc}")
+                    self.ui.error(f"Failed item {i}: {YtDlpErrorTranslator.translate(exc)}")
+                    logger.exception("Playlist item %s failed", i)
 
         self.ui.success(f"Playlist batch complete! {success}/{len(indices)} downloaded successfully.")
 
     def _extract_playlist(self, url: str) -> Optional[List[Dict[str, Any]]]:
-        opts = {"quiet": True, "extract_flat": True, "skip_download": True}
+        opts = {"quiet": True, "extract_flat": True, "skip_download": True, "cachedir": str(CACHE_DIR)}
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -989,11 +1336,11 @@ class PlaylistDownloader(BaseDownloader):
 
 
 # =====================================================================
-# NEW UX COMMANDS: SEARCH & BATCH DOWNLOAD
+# SEARCH & BATCH DOWNLOAD
 # =====================================================================
 
 class SearchDownloader:
-    """Search YouTube directly inside Termux and download media."""
+    """Search YouTube directly and download media."""
 
     def __init__(self, ui: UI, settings: Settings, history: History) -> None:
         self.ui = ui
@@ -1007,14 +1354,14 @@ class SearchDownloader:
             return
 
         with self.ui.console.status("[bold cyan]Searching YouTube..."):
-            opts = {"quiet": True, "extract_flat": True, "skip_download": True}
+            opts = {"quiet": True, "extract_flat": True, "skip_download": True, "cachedir": str(CACHE_DIR)}
             search_target = f"ytsearch7:{query}"
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     res = ydl.extract_info(search_target, download=False)
                     entries = res.get("entries", []) if res else []
             except Exception as exc:
-                self.ui.error(f"Search failed: {exc}")
+                self.ui.error(f"Search failed: {YtDlpErrorTranslator.translate(exc)}")
                 return
 
         if not entries:
@@ -1036,7 +1383,8 @@ class SearchDownloader:
             )
 
         self.ui.console.print(table)
-        choice_str = Prompt.ask("Select video number to download (0 to cancel)", choices=[str(i) for i in range(len(entries) + 1)], default="1")
+        choice_str = Prompt.ask("Select video number to download (0 to cancel)",
+                                 choices=[str(i) for i in range(len(entries) + 1)], default="1")
         if choice_str == "0":
             return
 
@@ -1069,7 +1417,8 @@ class BatchDownloader:
             if not path.exists():
                 self.ui.error("File not found.")
                 return
-            urls = [line.strip() for line in path.read_text().splitlines() if line.strip() and Validator.is_valid_url(line.strip())]
+            urls = [line.strip() for line in path.read_text().splitlines()
+                    if line.strip() and Validator.is_valid_url(line.strip())]
         else:
             self.ui.info("Paste URLs separated by space or commas:")
             raw = Prompt.ask("URLs")
@@ -1083,15 +1432,20 @@ class BatchDownloader:
         self.ui.info(f"Found {len(urls)} valid URLs.")
         dl_type = Prompt.ask("Download all as", choices=["video", "audio"], default="video")
 
-        downloader = Downloader(self.ui, self.settings, self.history) if dl_type == "video" else AudioDownloader(self.ui, self.settings, self.history)
+        downloader = Downloader(self.ui, self.settings, self.history) if dl_type == "video" \
+            else AudioDownloader(self.ui, self.settings, self.history)
 
         for idx, u in enumerate(urls, start=1):
             self.ui.rule(f"Item {idx}/{len(urls)}")
             downloader.run(u)
 
 
+# =====================================================================
+# ENGINE MAINTENANCE
+# =====================================================================
+
 class EngineMaintenance:
-    """Update engine and manage cache."""
+    """Update yt-dlp and manage GVA's own cache/temp folders."""
 
     def __init__(self, ui: UI) -> None:
         self.ui = ui
@@ -1101,14 +1455,24 @@ class EngineMaintenance:
         table = Table(box=box.ROUNDED, show_header=False)
         table.add_row("1", "Update yt-dlp library")
         table.add_row("2", "Clear yt-dlp Cache")
-        table.add_row("3", "Back")
+        table.add_row("3", "Clear GVA Cache && Temp Folders")
+        table.add_row("4", "Back")
         self.ui.console.print(table)
 
-        choice = Prompt.ask("Select action", choices=["1", "2", "3"], default="1")
+        choice = Prompt.ask("Select action", choices=["1", "2", "3", "4"], default="1")
         if choice == "1":
             with self.ui.console.status("[bold cyan]Updating yt-dlp..."):
                 try:
-                    res = subprocess.run([sys.executable, "-m", "pip", "install", "-U", "yt-dlp"], capture_output=True, text=True)
+                    res = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "-U", "yt-dlp", "--break-system-packages"],
+                        capture_output=True, text=True,
+                    )
+                    if res.returncode != 0:
+                        # --break-system-packages isn't valid on every pip version; retry without it.
+                        res = subprocess.run(
+                            [sys.executable, "-m", "pip", "install", "-U", "yt-dlp"],
+                            capture_output=True, text=True,
+                        )
                     if res.returncode == 0:
                         self.ui.success("yt-dlp updated successfully!")
                     else:
@@ -1117,11 +1481,26 @@ class EngineMaintenance:
                     self.ui.error(f"Error during update: {exc}")
         elif choice == "2":
             try:
-                with yt_dlp.YoutubeDL({}) as ydl:
+                with yt_dlp.YoutubeDL({"cachedir": str(CACHE_DIR)}) as ydl:
                     ydl.cache.remove()
-                self.ui.success("Cache cleared successfully.")
+                self.ui.success("yt-dlp cache cleared successfully.")
             except Exception as exc:
                 self.ui.error(f"Failed to clear cache: {exc}")
+        elif choice == "3":
+            cleared = 0
+            for folder in (CACHE_DIR, TEMP_DIR):
+                try:
+                    if folder.exists():
+                        for item in folder.iterdir():
+                            if item.is_dir():
+                                shutil.rmtree(item, ignore_errors=True)
+                            else:
+                                item.unlink(missing_ok=True)
+                            cleared += 1
+                    Utilities.ensure_dir(folder)
+                except Exception as exc:
+                    self.ui.error(f"Failed clearing {folder}: {exc}")
+            self.ui.success(f"Cleared {cleared} item(s) from GVA cache/temp folders.")
 
 
 # =====================================================================
@@ -1134,49 +1513,114 @@ class Menu:
         self.settings = settings
         self.history = history
 
-    def show_history(self) -> None:
-        self.ui.rule("Download History")
-        if not self.history.entries:
-            self.ui.info("No download history yet.")
-            return
+    # ---------------------------------------------------------------
+    # HISTORY MENU
+    # ---------------------------------------------------------------
+    def history_menu(self) -> None:
+        while True:
+            self.ui.rule("Download History")
+            table = Table(box=box.ROUNDED, show_header=False)
+            table.add_row("1", "View History")
+            table.add_row("2", "Search History")
+            table.add_row("3", "Open Download Location")
+            table.add_row("4", "Delete History Entry")
+            table.add_row("5", "Clear History")
+            table.add_row("6", "Back")
+            self.ui.console.print(table)
 
+            choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6"], default="6")
+            if choice == "1":
+                self._render_history(self.history.entries)
+            elif choice == "2":
+                query = Prompt.ask("Search term")
+                results = self.history.search(query)
+                self._render_history([e for _, e in results])
+            elif choice == "3":
+                Utilities.open_folder(self.settings.get_download_root())
+            elif choice == "4":
+                if not self.history.entries:
+                    self.ui.info("No download history yet.")
+                    continue
+                self._render_history(self.history.entries)
+                idx_str = Prompt.ask("Entry number to delete (0 to cancel)",
+                                      choices=[str(i) for i in range(len(self.history.entries) + 1)], default="0")
+                if idx_str != "0":
+                    if self.history.delete(int(idx_str) - 1):
+                        self.ui.success("Entry deleted.")
+            elif choice == "5":
+                if Confirm.ask("Clear entire history?", default=False):
+                    self.history.clear()
+                    self.ui.success("History cleared.")
+            else:
+                return
+
+    def _render_history(self, entries: List[HistoryEntry]) -> None:
+        if not entries:
+            self.ui.info("No matching history entries.")
+            return
         table = Table(box=box.ROUNDED, border_style=self.ui.theme.style("primary"))
         table.add_column("#", style="bold")
         table.add_column("Date")
         table.add_column("Title")
-        table.add_column("Resolution/Bitrate")
-        for idx, entry in enumerate(self.history.entries, start=1):
-            table.add_row(str(idx), entry.date, entry.title, entry.resolution)
+        table.add_column("Type")
+        table.add_column("Quality")
+        table.add_column("Output Path", overflow="fold")
+        for idx, entry in enumerate(entries, start=1):
+            table.add_row(str(idx), entry.date, entry.title, entry.type, entry.quality, entry.output_path)
         self.ui.console.print(table)
 
-        if Confirm.ask("Clear history?", default=False):
-            self.history.clear()
-            self.ui.success("History cleared.")
+    # ---------------------------------------------------------------
+    # SETTINGS MENU
+    # ---------------------------------------------------------------
+    def settings_menu(self) -> None:
+        while True:
+            self.ui.rule("Settings")
+            table = Table(box=box.ROUNDED, show_header=False)
+            table.add_row("1. Download Folder", str(self.settings.get_download_root()))
+            table.add_row("2. Video Quality", self.settings.data.default_video_quality)
+            table.add_row("3. Audio Quality", self.settings.data.default_audio_quality)
+            table.add_row("4. Theme", self.settings.data.theme)
+            table.add_row("5. Overwrite Existing Files", str(self.settings.data.overwrite_existing))
+            table.add_row("6. Reset Settings", "")
+            table.add_row("7. Back", "")
+            self.ui.console.print(table)
 
-    def show_settings(self) -> None:
-        self.ui.rule("Settings")
-        table = Table(box=box.ROUNDED, show_header=False)
-        table.add_row("1. Download Folder", self.settings.data.download_folder)
-        table.add_row("2. Theme", self.settings.data.theme)
-        table.add_row("3. Overwrite Files", str(self.settings.data.overwrite_existing))
-        table.add_row("4. Back", "")
-        self.ui.console.print(table)
-
-        choice = Prompt.ask("Setting choice", choices=["1", "2", "3", "4"], default="4")
-        if choice == "1":
-            folder = Prompt.ask("New folder path", default=self.settings.data.download_folder)
-            self.settings.data.download_folder = str(Path(folder).expanduser())
-            self.settings.save()
-            self.ui.success("Folder updated.")
-        elif choice == "2":
-            t = Prompt.ask("Theme", choices=list(Theme.THEMES.keys()), default="default")
-            self.settings.data.theme = t
-            self.ui.theme = Theme(t)
-            self.settings.save()
-            self.ui.success("Theme updated.")
-        elif choice == "3":
-            self.settings.data.overwrite_existing = Confirm.ask("Overwrite existing files?", default=False)
-            self.settings.save()
+            choice = Prompt.ask("Setting choice", choices=[str(i) for i in range(1, 8)], default="7")
+            if choice == "1":
+                self.ui.console.print(f"[{self.ui.theme.style('muted')}]Current: {self.settings.get_download_root()}[/]")
+                folder = Prompt.ask("Enter new download folder (relative or absolute path)",
+                                     default=self.settings.data.download_folder)
+                self.settings.set_download_root(folder)
+                self.ui.success(f"Download folder updated. videos/ and audios/ created under: "
+                                 f"{self.settings.get_download_root()}")
+            elif choice == "2":
+                q = Prompt.ask("Default video quality label (e.g. 'Best Available', '1080p')",
+                                default=self.settings.data.default_video_quality)
+                self.settings.data.default_video_quality = q
+                self.settings.save()
+                self.ui.success("Default video quality updated.")
+            elif choice == "3":
+                q = Prompt.ask("Default audio quality label (e.g. 'Best Available', '192 kbps')",
+                                default=self.settings.data.default_audio_quality)
+                self.settings.data.default_audio_quality = q
+                self.settings.save()
+                self.ui.success("Default audio quality updated.")
+            elif choice == "4":
+                t = Prompt.ask("Theme", choices=list(Theme.THEMES.keys()), default="default")
+                self.settings.data.theme = t
+                self.ui.theme = Theme(t)
+                self.settings.save()
+                self.ui.success("Theme updated.")
+            elif choice == "5":
+                self.settings.data.overwrite_existing = Confirm.ask("Overwrite existing files?", default=False)
+                self.settings.save()
+            elif choice == "6":
+                if Confirm.ask("Reset all settings to defaults?", default=False):
+                    self.settings.reset()
+                    self.ui.theme = Theme(self.settings.data.theme)
+                    self.ui.success("Settings reset to defaults.")
+            else:
+                return
 
     def show_help(self) -> None:
         self.ui.rule("Help & Info")
@@ -1184,6 +1628,7 @@ class Menu:
             "• Video Download: Provides real-time dynamic quality options extracted from the video link.\n"
             "• Playlist Download: Supports downloading full playlists as Video OR Audio (MP3/FLAC/M4A).\n"
             "• YouTube Search: Search keywords directly without opening a browser.\n"
+            "• Direct URL: python gva_downloader.py \"<url>\" opens a quick download menu.\n"
             "• Engine Maintenance: Keep yt-dlp updated to prevent extraction failures.",
             title="💡 Hints & Features",
         )
@@ -1191,13 +1636,15 @@ class Menu:
     def show_about(self) -> None:
         self.ui.rule("About")
         self.ui.panel(
-            f"GVA Downloader v{APP_VERSION}\nAuthor: {APP_AUTHOR}\nPlatform: {APP_PLATFORM}\nEngine: {APP_ENGINE}",
+            f"GVA Downloader v{APP_VERSION}\nAuthor: {APP_AUTHOR}\nPlatform: {APP_PLATFORM}\n"
+            f"Engine: {APP_ENGINE}\nApp Folder: {APP_DIR}",
             title="📖 About App",
         )
 
 
 class Application:
     def __init__(self) -> None:
+        Utilities.ensure_app_directories()
         self.settings = Settings()
         self.history = History()
         self.theme = Theme(self.settings.data.theme)
@@ -1205,14 +1652,25 @@ class Application:
         self.menu = Menu(self.ui, self.settings, self.history)
         self.running = True
 
+    def startup_check(self) -> None:
+        statuses = Utilities.check_dependencies()
+        if not all(statuses.values()):
+            self.ui.console.print(self.ui.dependency_check_table(statuses))
+            if not statuses["yt-dlp"]:
+                self.ui.error("yt-dlp is required. Install it with: pip install -U yt-dlp")
+            if not statuses["FFmpeg"]:
+                self.ui.warning("FFmpeg is required for video merging/audio conversion/thumbnail embedding.")
+            self.ui.press_enter()
+
     def main_loop(self) -> None:
+        choice = None
         while self.running:
             try:
                 self.ui.clear()
                 self.ui.show_logo()
                 self.ui.console.print(self.ui.main_menu())
                 choice = Prompt.ask("Select an option", choices=[str(i) for i in range(1, 13)], show_choices=False)
-                
+
                 if choice == "1":
                     Downloader(self.ui, self.settings, self.history).run()
                 elif choice == "2":
@@ -1227,10 +1685,12 @@ class Application:
                     url = Prompt.ask("Paste URL")
                     if Validator.is_valid_url(url):
                         VideoInfo(self.ui).show(url)
+                    else:
+                        self.ui.error("Invalid URL.")
                 elif choice == "7":
-                    self.menu.show_history()
+                    self.menu.history_menu()
                 elif choice == "8":
-                    self.menu.show_settings()
+                    self.menu.settings_menu()
                 elif choice == "9":
                     EngineMaintenance(self.ui).run()
                 elif choice == "10":
@@ -1251,18 +1711,194 @@ class Application:
                 self.ui.press_enter()
 
     def run(self) -> None:
-        Utilities.ensure_dir(CONFIG_DIR)
-        Utilities.ensure_dir(self.settings.get_download_folder())
+        self.startup_check()
         self.main_loop()
 
 
+# =====================================================================
+# DIRECT URL MODE / COMMAND-LINE WORKFLOW
+# =====================================================================
+# This is what makes `python gva_downloader.py "<url>"` work, and what
+# powers the Termux "Share -> GVA Downloader" workflow (see README.md).
+
+def _build_app_context() -> Tuple[UI, Settings, History]:
+    """Prepare folders + settings/history/UI without starting the menu loop."""
+    Utilities.ensure_app_directories()
+    settings = Settings()
+    history = History()
+    theme = Theme(settings.data.theme)
+    ui = UI(theme)
+    return ui, settings, history
+
+
+def handle_direct_url(url: str) -> None:
+    """Show the quick 'URL detected' menu for a URL passed on the command line."""
+    ui, settings, history = _build_app_context()
+    ui.clear()
+
+    if not Validator.is_valid_url(url):
+        ui.error(f"'{url}' is not a valid URL.")
+        return
+
+    ui.console.print(Panel(
+        Align.center(Text.from_markup(f"[bold cyan]{APP_NAME}[/bold cyan]\n\n[bold]URL detected[/bold]")),
+        box=box.DOUBLE, border_style=ui.theme.style("primary"),
+    ))
+
+    info_fetcher = VideoInfo(ui)
+    with ui.console.status("[bold cyan]Fetching title..."):
+        info = info_fetcher.extract(url)
+
+    title = str(info.get("title", "Unknown")) if info else "Unknown"
+    ui.console.print(f"\n[bold]🎬 Title:[/bold]\n{title}\n")
+
+    table = Table(box=box.ROUNDED, show_header=False)
+    table.add_row("1", "Download Video")
+    table.add_row("2", "Download Audio")
+    table.add_row("3", "Download Best Quality")
+    table.add_row("4", "View Information")
+    table.add_row("5", "Cancel")
+    ui.console.print(table)
+
+    choice = Prompt.ask("Choose", choices=["1", "2", "3", "4", "5"], default="1")
+    if choice == "1":
+        Downloader(ui, settings, history).run(url)
+    elif choice == "2":
+        AudioDownloader(ui, settings, history).run(url)
+    elif choice == "3":
+        # "Best Quality" = video downloader forced onto the Best Available rung.
+        downloader = Downloader(ui, settings, history)
+        if info is None:
+            ui.error("Could not fetch media information.")
+            return
+        label, height = "Best Available", None
+        output_folder = downloader.ask_output_folder()
+        stem = downloader.resolve_duplicate(output_folder, title, [".mp4", ".mkv", ".webm"])
+        if stem is None:
+            return
+        opts = {
+            "format": "bestvideo+bestaudio/best",
+            "outtmpl": str(output_folder / f"{stem}.%(ext)s"),
+            "merge_output_format": "mp4",
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "postprocessors": [{"key": "FFmpegMetadata"}],
+            "overwrites": True,
+            "cachedir": str(CACHE_DIR),
+            "paths": {"temp": str(TEMP_DIR)},
+        }
+        with ui.build_progress() as progress:
+            bridge = ProgressHookBridge(progress, ui)
+            opts["progress_hooks"] = [bridge.hook]
+            path, actual_info = downloader._execute_download(url, opts)
+        if path:
+            ui.success("Download completed!")
+            ui.console.print(f"\n[bold]File:[/bold]\n{path.name}\n\n[bold]Location:[/bold]\n{path}")
+            history.add(title=str(actual_info.get("title", "Unknown")), url=url,
+                        website=str(actual_info.get("extractor_key", "Unknown")),
+                        media_type="video", quality=label, fmt=path.suffix.lstrip("."),
+                        output_path=str(path))
+    elif choice == "4":
+        if info:
+            info_fetcher.show(url)
+        else:
+            ui.error("Could not fetch media information.")
+    else:
+        ui.info("Cancelled.")
+
+
+def quick_video(url: str) -> None:
+    """`--video URL` flow: minimal quality prompt, download straight to videos/."""
+    ui, settings, history = _build_app_context()
+    if not Validator.is_valid_url(url):
+        ui.error(f"'{url}' is not a valid URL.")
+        return
+    ui.info("URL detected. Fetching information...")
+    Downloader(ui, settings, history).run(url)
+
+
+def quick_audio(url: str) -> None:
+    """`--audio URL` flow: minimal format prompt, download straight to audios/."""
+    ui, settings, history = _build_app_context()
+    if not Validator.is_valid_url(url):
+        ui.error(f"'{url}' is not a valid URL.")
+        return
+    ui.info("URL detected. Fetching information...")
+    AudioDownloader(ui, settings, history).run(url)
+
+
+def quick_info(url: str) -> None:
+    """`--info URL` flow: show media info only, no download."""
+    ui, settings, history = _build_app_context()
+    if not Validator.is_valid_url(url):
+        ui.error(f"'{url}' is not a valid URL.")
+        return
+    VideoInfo(ui).show(url)
+
+
+def cli_history() -> None:
+    """`--history` flow: print history and exit."""
+    ui, settings, history = _build_app_context()
+    Menu(ui, settings, history)._render_history(history.entries)
+
+
+def cli_settings() -> None:
+    """`--settings` flow: open the interactive settings menu and exit."""
+    ui, settings, history = _build_app_context()
+    Menu(ui, settings, history).settings_menu()
+
+
+# =====================================================================
+# ENTRY POINT
+# =====================================================================
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="gva_downloader.py",
+        description=f"{APP_NAME} v{APP_VERSION} - portable, cross-platform media downloader (powered by yt-dlp).",
+    )
+    parser.add_argument("url", nargs="?", default=None,
+                         help="Direct URL to download or share (opens the quick download menu).")
+    parser.add_argument("--url", dest="url_flag", default=None, help="Same as passing the URL directly.")
+    parser.add_argument("--video", dest="video_url", default=None, help="Quick video download for URL.")
+    parser.add_argument("--audio", dest="audio_url", default=None, help="Quick audio download for URL.")
+    parser.add_argument("--info", dest="info_url", default=None, help="Show media information for URL only.")
+    parser.add_argument("--history", action="store_true", help="Print download history and exit.")
+    parser.add_argument("--settings", action="store_true", help="Open the settings menu and exit.")
+    return parser
+
+
 def main() -> None:
+    parser = build_arg_parser()
+    args = parser.parse_args()
+
     try:
-        app = Application()
-        app.run()
+        if args.video_url:
+            quick_video(args.video_url)
+        elif args.audio_url:
+            quick_audio(args.audio_url)
+        elif args.info_url:
+            quick_info(args.info_url)
+        elif args.history:
+            cli_history()
+        elif args.settings:
+            cli_settings()
+        elif args.url_flag:
+            handle_direct_url(args.url_flag)
+        elif args.url:
+            handle_direct_url(args.url)
+        else:
+            app = Application()
+            app.run()
     except KeyboardInterrupt:
         console.print("\n[bold yellow]⚠️ Exiting. Goodbye![/]")
         sys.exit(0)
+    except Exception as exc:
+        logger.exception("Fatal error")
+        console.print(f"[bold red]❌ Fatal error: {exc}[/]")
+        console.print(f"[grey62]See {LOG_FILE} for details.[/]")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
