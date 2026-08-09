@@ -1,17 +1,89 @@
-# Python bytecode & cache
+# ============================================================
+# GVA Downloader - Runtime / User Data
+# ============================================================
+
+# User-generated application data
+config/
+history/
+logs/
+cache/
+temp/
+downloads/
+
+# Backup/runtime files
+*.tmp
+*.temp
+*.log
+*.bak
+*.backup
+
+# ============================================================
+# Python
+# ============================================================
+
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyd
 
-# Environments
+# ============================================================
+# Virtual environments
+# ============================================================
+
 venv/
 .venv/
 env/
+ENV/
 
-# IDE & Editor files
+# ============================================================
+# Environment / secrets
+# ============================================================
+
+.env
+.env.*
+!.env.example
+
+# Credentials / secrets
+*.pem
+*.key
+*.crt
+secrets.json
+credentials.json
+token.json
+cookies.txt
+cookies*.txt
+
+# ============================================================
+# IDE / Editor
+# ============================================================
+
 .vscode/
 .idea/
+*.code-workspace
 
-# Local downloads directory
-GVA_DOWNLOADER/downloads/
-*.tmp
+# ============================================================
+# OS files
+# ============================================================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============================================================
+# Build / packaging
+# ============================================================
+
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ============================================================
+# Coverage / testing
+# ============================================================
+
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
