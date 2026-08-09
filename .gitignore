@@ -2,7 +2,6 @@
 # GVA Downloader - Runtime / User Data
 # ============================================================
 
-# User-generated application data
 config/
 history/
 logs/
@@ -10,10 +9,9 @@ cache/
 temp/
 downloads/
 
-# Backup/runtime files
+*.log
 *.tmp
 *.temp
-*.log
 *.bak
 *.backup
 
@@ -36,25 +34,25 @@ env/
 ENV/
 
 # ============================================================
-# Environment / secrets
+# Secrets / Credentials
 # ============================================================
 
 .env
 .env.*
 !.env.example
 
-# Credentials / secrets
 *.pem
 *.key
 *.crt
-secrets.json
+
 credentials.json
+secrets.json
 token.json
 cookies.txt
 cookies*.txt
 
 # ============================================================
-# IDE / Editor
+# IDE
 # ============================================================
 
 .vscode/
@@ -62,7 +60,7 @@ cookies*.txt
 *.code-workspace
 
 # ============================================================
-# OS files
+# OS
 # ============================================================
 
 .DS_Store
@@ -70,7 +68,7 @@ Thumbs.db
 desktop.ini
 
 # ============================================================
-# Build / packaging
+# Build / Packaging
 # ============================================================
 
 build/
@@ -79,11 +77,11 @@ dist/
 .eggs/
 
 # ============================================================
-# Coverage / testing
+# Testing / Coverage
 # ============================================================
 
-.coverage
-htmlcov/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
