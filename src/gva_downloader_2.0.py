@@ -46,15 +46,6 @@ try:
     from rich.console import Console
     from rich.panel import Panel
     from rich.table import Table
-    from rich.progress import (
-        Progress,
-        BarColumn,
-        TextColumn,
-        TimeElapsedColumn,
-        TimeRemainingColumn,
-        DownloadColumn,
-        TransferSpeedColumn,
-    )
     from rich.prompt import Prompt, Confirm
     from rich.align import Align
     from rich.text import Text
@@ -121,17 +112,16 @@ LOG_FILE = LOGS_DIR / "gva_downloader.log"
 
 APP_OWNED_DIRS = [CONFIG_DIR, HISTORY_DIR, LOGS_DIR, CACHE_DIR, TEMP_DIR, DEFAULT_DOWNLOADS_DIR]
 
-LOGO = r"""
-[bold cyan]
+LOGO_ART = r"""
  ██████╗  ██╗   ██╗ █████╗
 ██╔════╝ ██║   ██║██╔══██╗
 ██║  ███╗██║   ██║███████║
 ██║   ██║╚██╗ ██╔╝██╔══██║
 ╚██████╔╝ ╚████╔╝ ██║  ██║
  ╚═════╝   ╚═══╝  ╚═╝  ╚═╝
-[/bold cyan]
-[bold magenta]        GVA Downloader v2.0[/bold magenta]
 """
+
+APP_TAGLINE = "Fast. Portable. Beautifully simple media downloads."
 
 AUDIO_FORMATS = ["MP3", "M4A", "AAC", "FLAC", "OGG", "WAV"]
 
@@ -305,6 +295,34 @@ class Utilities:
             return False
 
     @staticmethod
+    def open_file(path: Path) -> bool:
+        """Open a downloaded media file in the OS/default media player."""
+        try:
+            if not path.exists():
+                console.print(f"[yellow]File not found: {path}[/yellow]")
+                return False
+
+            if Utilities.which("termux-open"):
+                subprocess.Popen(["termux-open", str(path)])
+                return True
+            if sys.platform.startswith("win"):
+                os.startfile(str(path))  # type: ignore[attr-defined]
+                return True
+            if sys.platform == "darwin" and Utilities.which("open"):
+                subprocess.Popen(["open", str(path)])
+                return True
+            if Utilities.which("xdg-open"):
+                subprocess.Popen(["xdg-open", str(path)])
+                return True
+
+            console.print(f"[yellow]Could not find a media opener. File: {path}[/yellow]")
+            return False
+        except Exception as exc:
+            logger.error("Failed to open media file %s: %s", path, exc)
+            console.print(f"[red]Could not play/open file: {exc}[/red]")
+            return False
+
+    @staticmethod
     def ensure_app_directories() -> None:
         """Create every folder GVA Downloader owns, if missing."""
         for d in APP_OWNED_DIRS:
@@ -328,9 +346,14 @@ class Utilities:
 # =====================================================================
 
 class Theme:
-    """Centralized color/style theme for the whole application."""
+    """Centralized color/style theme for the whole application.
 
-    THEMES: Dict[str, Dict[str, str]] = {
+    Each theme also carries a `swatch` (a handful of representative colors,
+    used to render a tiny live preview when the user is picking a theme)
+    and an `emoji` used as a quick visual signature in menus.
+    """
+
+    THEMES: Dict[str, Dict[str, Any]] = {
         "default": {
             "primary": "cyan",
             "secondary": "magenta",
@@ -340,6 +363,10 @@ class Theme:
             "warning": "bold yellow",
             "info": "bold cyan",
             "muted": "grey62",
+            "border": "bright_cyan",
+            "swatch": ["cyan", "magenta", "yellow"],
+            "emoji": "💠",
+            "label": "Default",
         },
         "ocean": {
             "primary": "blue",
@@ -350,6 +377,10 @@ class Theme:
             "warning": "bold yellow",
             "info": "bold blue",
             "muted": "grey62",
+            "border": "bright_blue",
+            "swatch": ["blue", "cyan", "bright_cyan"],
+            "emoji": "🌊",
+            "label": "Ocean",
         },
         "sunset": {
             "primary": "red",
@@ -360,6 +391,66 @@ class Theme:
             "warning": "bold yellow",
             "info": "bold magenta",
             "muted": "grey62",
+            "border": "bright_red",
+            "swatch": ["red", "yellow", "bright_magenta"],
+            "emoji": "🌅",
+            "label": "Sunset",
+        },
+        "dracula": {
+            "primary": "bright_magenta",
+            "secondary": "bright_cyan",
+            "accent": "bright_green",
+            "success": "bold bright_green",
+            "error": "bold bright_red",
+            "warning": "bold bright_yellow",
+            "info": "bold bright_magenta",
+            "muted": "grey62",
+            "border": "bright_magenta",
+            "swatch": ["bright_magenta", "bright_cyan", "bright_green"],
+            "emoji": "🧛",
+            "label": "Dracula",
+        },
+        "nord": {
+            "primary": "bright_blue",
+            "secondary": "bright_white",
+            "accent": "cyan",
+            "success": "bold green",
+            "error": "bold red",
+            "warning": "bold yellow",
+            "info": "bold bright_blue",
+            "muted": "grey62",
+            "border": "bright_white",
+            "swatch": ["bright_blue", "bright_white", "cyan"],
+            "emoji": "❄️",
+            "label": "Nord",
+        },
+        "cyberpunk": {
+            "primary": "bright_magenta",
+            "secondary": "bright_yellow",
+            "accent": "bright_cyan",
+            "success": "bold bright_green",
+            "error": "bold bright_red",
+            "warning": "bold bright_yellow",
+            "info": "bold bright_cyan",
+            "muted": "grey62",
+            "border": "bright_yellow",
+            "swatch": ["bright_magenta", "bright_yellow", "bright_cyan"],
+            "emoji": "🤖",
+            "label": "Cyberpunk",
+        },
+        "forest": {
+            "primary": "green",
+            "secondary": "bright_green",
+            "accent": "yellow",
+            "success": "bold green",
+            "error": "bold red",
+            "warning": "bold yellow",
+            "info": "bold green",
+            "muted": "grey62",
+            "border": "green",
+            "swatch": ["green", "bright_green", "yellow"],
+            "emoji": "🌲",
+            "label": "Forest",
         },
     }
 
@@ -367,11 +458,24 @@ class Theme:
         self.name = name if name in self.THEMES else "default"
 
     @property
-    def colors(self) -> Dict[str, str]:
+    def colors(self) -> Dict[str, Any]:
         return self.THEMES[self.name]
 
     def style(self, key: str) -> str:
-        return self.colors.get(key, "white")
+        value = self.colors.get(key, "white")
+        return value if isinstance(value, str) else "white"
+
+    @property
+    def swatch(self) -> List[str]:
+        return list(self.colors.get("swatch", ["white", "white", "white"]))
+
+    @property
+    def emoji(self) -> str:
+        return str(self.colors.get("emoji", "🎨"))
+
+    @property
+    def label(self) -> str:
+        return str(self.colors.get("label", self.name.title()))
 
 
 # =====================================================================
@@ -598,91 +702,153 @@ class UI:
     def clear(self) -> None:
         self.console.clear()
 
-    def show_logo(self) -> None:
-        self.console.print(Align.center(Text.from_markup(LOGO)))
-        info = Table.grid(padding=(0, 2))
-        info.add_column(justify="right", style=f"bold {self.theme.style('secondary')}")
-        info.add_column(justify="left", style=self.theme.style('primary'))
-        info.add_row("Author", APP_AUTHOR)
-        info.add_row("Engine", APP_ENGINE)
-        info.add_row("Version", APP_VERSION)
-        info.add_row("App Folder", str(APP_DIR))
-        self.console.print(Align.center(info))
+    def show_logo(self, settings: Optional["Settings"] = None, history: Optional["History"] = None) -> None:
+        """Render the full header: ASCII banner, tagline, and a live info card."""
+        primary = self.theme.style("primary")
+        secondary = self.theme.style("secondary")
+        accent = self.theme.style("accent")
+
+        logo_text = Text(LOGO_ART, style=f"bold {primary}")
+        tagline = Text(APP_TAGLINE, style=f"italic {accent}", justify="center")
+        badge = Text(f"  {self.theme.emoji}  GVA DOWNLOADER  •  v{APP_VERSION}  ", style=f"bold reverse {secondary}")
+
+        header = Table.grid(expand=False)
+        header.add_column(justify="center")
+        header.add_row(logo_text)
+        header.add_row(Align.center(badge))
+        header.add_row(Text(""))
+        header.add_row(tagline)
+
+        self.console.print(Align.center(header))
         self.console.print()
 
+        info = Table.grid(padding=(0, 2))
+        info.add_column(justify="right", style=f"bold {secondary}")
+        info.add_column(justify="left", style=primary)
+        info.add_row("👤 Author", APP_AUTHOR)
+        info.add_row("⚙️  Engine", f"{APP_ENGINE}")
+        info.add_row("🎨 Theme", self.theme.label)
+        info.add_row("📂 App Folder", str(APP_DIR))
+        self.console.print(Panel(Align.center(info), border_style=self.theme.style("border"), box=box.ROUNDED, padding=(0, 2)))
+
+        if settings is not None and history is not None:
+            self.console.print(Align.center(self.dashboard_line(settings, history)))
+        self.console.print()
+
+    def dashboard_line(self, settings: "Settings", history: "History") -> Text:
+        """A single-line 'at a glance' stats strip shown under the header."""
+        videos = sum(1 for e in history.entries if e.type == "video")
+        audios = sum(1 for e in history.entries if e.type == "audio")
+        size_bytes = 0
+        root = settings.get_download_root()
+        try:
+            if root.exists():
+                size_bytes = sum(f.stat().st_size for f in root.rglob("*") if f.is_file())
+        except Exception:
+            size_bytes = 0
+
+        muted = self.theme.style("muted")
+        accent = self.theme.style("accent")
+        parts = Text()
+        parts.append("🎬 ", style=accent)
+        parts.append(f"{videos} videos", style=muted)
+        parts.append("   🎵 ", style=accent)
+        parts.append(f"{audios} audios", style=muted)
+        parts.append("   💾 ", style=accent)
+        parts.append(f"{Utilities.human_size(size_bytes)} used", style=muted)
+        parts.append("   🕘 ", style=accent)
+        last_date = history.entries[-1].date if history.entries else "—"
+        parts.append(f"last: {last_date}", style=muted)
+        return parts
+
     def panel(self, content: str, title: str = "", style: Optional[str] = None) -> None:
-        style = style or self.theme.style("primary")
-        self.console.print(Panel(content, title=title, border_style=style, box=box.ROUNDED))
+        style = style or self.theme.style("border")
+        self.console.print(Panel(content, title=title, border_style=style, box=box.ROUNDED, padding=(1, 2)))
 
     def success(self, message: str) -> None:
-        self.console.print(f"[{self.theme.style('success')}]✅ {message}[/]")
+        self.console.print(f"[{self.theme.style('success')}]▎✅ {message}[/]")
 
     def error(self, message: str) -> None:
-        self.console.print(f"[{self.theme.style('error')}]❌ {message}[/]")
+        self.console.print(f"[{self.theme.style('error')}]▎❌ {message}[/]")
 
     def warning(self, message: str) -> None:
-        self.console.print(f"[{self.theme.style('warning')}]⚠️  {message}[/]")
+        self.console.print(f"[{self.theme.style('warning')}]▎⚠️  {message}[/]")
 
     def info(self, message: str) -> None:
-        self.console.print(f"[{self.theme.style('info')}]ℹ️  {message}[/]")
+        self.console.print(f"[{self.theme.style('info')}]▎ℹ️  {message}[/]")
 
     def rule(self, title: str = "") -> None:
-        self.console.print(Rule(title, style=self.theme.style("secondary")))
+        label = f"[bold {self.theme.style('accent')}]{title}[/]" if title else ""
+        self.console.print(Rule(label, style=self.theme.style("secondary")))
+
+    def section_title(self, text: str) -> None:
+        self.console.print(f"\n[bold {self.theme.style('accent')}]── {text} ──[/]\n")
 
     def main_menu(self) -> Table:
-        table = Table(
-            title="✨ Main Menu ✨",
-            box=box.ROUNDED,
-            border_style=self.theme.style("primary"),
-            title_style=f"bold {self.theme.style('accent')}",
+        outer = Table(
+            box=box.DOUBLE_EDGE,
+            border_style=self.theme.style("border"),
             show_header=False,
+            title=f"[bold {self.theme.style('accent')}]✨ MAIN MENU ✨[/]",
+            padding=(0, 1),
+            expand=False,
         )
-        table.add_column("Option", style=f"bold {self.theme.style('secondary')}", width=4)
-        table.add_column("Description", style=self.theme.style("primary"))
-        items = [
-            ("1", "🎬  Download Video"),
-            ("2", "🎵  Download Audio"),
-            ("3", "📜  Playlist Download (Video/Audio)"),
-            ("4", "🔍  Search YouTube & Download"),
-            ("5", "📁  Batch Downloads (List/File)"),
-            ("6", "ℹ️  Media Information"),
-            ("7", "🕘  Download History"),
-            ("8", "⚙️  Settings"),
-            ("9", "🛠️  Engine Maintenance (Update/Cache)"),
-            ("10", "❓ Help"),
-            ("11", "📖 About"),
-            ("12", "🚪 Exit"),
+        outer.add_column("Option", style=f"bold {self.theme.style('secondary')}", width=4, justify="center")
+        outer.add_column("Description", style=self.theme.style("primary"))
+
+        groups: List[Tuple[str, List[Tuple[str, str]]]] = [
+            ("⬇  DOWNLOAD", [
+                ("1", "🎬  Download Video"),
+                ("2", "🎵  Download Audio"),
+                ("3", "📜  Playlist Download (Video/Audio)"),
+            ]),
+            ("🔎  DISCOVER", [
+                ("4", "🔍  Search YouTube & Download"),
+                ("5", "📁  Batch Downloads (List/File)"),
+                ("6", "ℹ️  Media Information"),
+            ]),
+            ("🗂  MANAGE", [
+                ("7", "🕘  Download History"),
+                ("8", "⚙️  Settings"),
+                ("9", "🛠️  Engine Maintenance (Update/Cache)"),
+            ]),
+            ("💬  SUPPORT", [
+                ("10", "❓ Help"),
+                ("11", "📖 About"),
+                ("12", "🚪 Exit"),
+            ]),
         ]
-        for num, desc in items:
-            table.add_row(num, desc)
-        return table
+
+        first_group = True
+        for group_name, items in groups:
+            if not first_group:
+                outer.add_row("", "")
+            first_group = False
+            outer.add_row("", f"[bold {self.theme.style('accent')}]{group_name}[/]")
+            for num, desc in items:
+                outer.add_row(num, desc)
+        return outer
 
     def press_enter(self) -> None:
         try:
-            Prompt.ask(f"[{self.theme.style('muted')}]Press Enter to Continue[/]", default="")
+            Prompt.ask(f"[{self.theme.style('muted')}]↵  Press Enter to Continue[/]", default="")
         except (KeyboardInterrupt, EOFError):
             raise
 
-    def build_progress(self) -> Progress:
-        return Progress(
-            TextColumn("[bold]{task.description}"),
-            BarColumn(bar_width=None),
-            TextColumn("[progress.percentage]{task.percentage:>3.1f}%"),
-            DownloadColumn(),
-            TransferSpeedColumn(),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-            console=self.console,
-            transient=False,
-        )
+    def build_progress(self) -> "SingleLineProgress":
+        # Use a raw terminal renderer so one download always occupies exactly
+        # ONE physical terminal line.
+        return SingleLineProgress(self.theme)
 
     def dependency_check_table(self, statuses: Dict[str, bool]) -> Table:
-        table = Table(title="GVA Downloader Environment Check", box=box.ROUNDED,
-                      border_style=self.theme.style("primary"))
+        table = Table(title="🩺 GVA Downloader Environment Check", box=box.ROUNDED,
+                      border_style=self.theme.style("border"),
+                      title_style=f"bold {self.theme.style('accent')}")
         table.add_column("Component", style=f"bold {self.theme.style('secondary')}")
-        table.add_column("Status")
+        table.add_column("Status", justify="center")
         for name, ok in statuses.items():
-            table.add_row(name, "✅" if ok else "❌")
+            status = f"[{self.theme.style('success')}]● READY[/]" if ok else f"[{self.theme.style('error')}]● MISSING[/]"
+            table.add_row(name, status)
         return table
 
 
@@ -827,18 +993,219 @@ class VideoInfo:
 # PROGRESS HOOK BRIDGE
 # =====================================================================
 
-class ProgressHookBridge:
-    """Bridges yt-dlp's progress_hooks into a SINGLE Rich progress line.
+class SingleLineProgress:
+    """True one-line terminal progress renderer.
 
-    A video download typically pulls a separate video-only stream and
-    audio-only stream before merging them, and a playlist reuses the same
-    hook across many items. Rather than creating a new task per filename
-    (which stacks up multiple bars), this bridge keeps exactly one task and
-    simply relabels/resets it whenever yt-dlp moves on to a new file, so the
-    UI always shows a single, clean progress line.
+    It uses carriage-return updates instead of Rich's multi-row renderer.
+    Stream/fragment changes therefore never create additional progress lines.
     """
 
-    def __init__(self, progress: Progress, ui: UI) -> None:
+    # Minimal ANSI helper — this renderer writes raw bytes via sys.stdout
+    # (not through Rich) so it can guarantee exactly one physical line.
+    _ANSI = {
+        "reset": "\x1b[0m",
+        "bold": "\x1b[1m",
+        "cyan": "\x1b[36m",
+        "bright_cyan": "\x1b[96m",
+        "green": "\x1b[32m",
+        "bright_green": "\x1b[92m",
+        "yellow": "\x1b[33m",
+        "bright_yellow": "\x1b[93m",
+        "red": "\x1b[31m",
+        "bright_red": "\x1b[91m",
+        "magenta": "\x1b[35m",
+        "bright_magenta": "\x1b[95m",
+        "blue": "\x1b[34m",
+        "bright_blue": "\x1b[94m",
+        "white": "\x1b[37m",
+        "bright_white": "\x1b[97m",
+        "grey62": "\x1b[90m",
+    }
+    _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, theme: Optional["Theme"] = None) -> None:
+        self.task_id = 1
+        self.active = False
+        self.description = "Download"
+        self.total = 0.0
+        self.completed = 0.0
+        self.last_time = 0.0
+        self.last_bytes = 0.0
+        self.speed = 0.0
+        self.eta = None
+        self.theme = theme
+        self._spin_idx = 0
+        self._start_time = time.monotonic()
+
+    def _c(self, key: str) -> str:
+        """Resolve a themed color name (falling back gracefully) to ANSI."""
+        raw = "cyan"
+        if self.theme is not None:
+            raw = self.theme.style(key)
+        # theme styles may be like "bold bright_green" — take the last word.
+        token = raw.split()[-1] if raw else "cyan"
+        return self._ANSI.get(token, self._ANSI["cyan"])
+
+    @property
+    def task_ids(self):
+        return [self.task_id] if self.active else []
+
+    def __enter__(self):
+        self.active = True
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.finish()
+
+    @staticmethod
+    def _short_name(filename: str) -> str:
+        name = Path(str(filename or "download")).name
+        return name if len(name) <= 42 else name[:39] + "..."
+
+    @staticmethod
+    def _size(value: float) -> str:
+        value = float(value or 0)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if value < 1024:
+                return f"{value:.1f} {unit}"
+            value /= 1024
+        return f"{value:.1f} PB"
+
+    @staticmethod
+    def _time(seconds) -> str:
+        if seconds is None or seconds < 0:
+            return "--:--"
+        seconds = int(seconds)
+        h, rem = divmod(seconds, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+    def _render(self) -> None:
+        if not self.active:
+            return
+
+        reset = self._ANSI["reset"]
+        bold = self._ANSI["bold"]
+        muted = self._ANSI["grey62"]
+        accent = self._c("accent")
+
+        if self.total:
+            pct = max(0.0, min(100.0, (self.completed / self.total) * 100))
+            width = 26
+            filled = int(width * pct / 100)
+            # Color the bar green when nearly done, accent color otherwise.
+            bar_color = self._ANSI["bright_green"] if pct >= 99.5 else self._c("primary")
+            bar = f"{bar_color}{'█' * filled}{muted}{'░' * (width - filled)}{reset}"
+            eta = self.eta
+            if eta is None and self.speed > 0:
+                eta = max(0, (self.total - self.completed) / self.speed)
+            progress_part = (
+                f"{bar} {bold}{pct:5.1f}%{reset} "
+                f"{muted}{self._size(self.completed)}/{self._size(self.total)}{reset}"
+            )
+        else:
+            # No known total: show a small spinner instead of a static bar.
+            frame = self._SPINNER_FRAMES[self._spin_idx % len(self._SPINNER_FRAMES)]
+            self._spin_idx += 1
+            progress_part = f"{accent}{frame}{reset} {muted}{self._size(self.completed)} downloaded{reset}"
+            eta = None
+
+        speed = f"{self._size(self.speed)}/s" if self.speed > 0 else "--"
+        icon_dl = "⬇"
+        icon_speed = "⚡"
+        icon_eta = "⏳"
+        name = self._c("secondary") + bold + self._short_name(self.description) + reset
+
+        line = (
+            f"{icon_dl} {name} {progress_part}  "
+            f"{icon_speed} {muted}{speed}{reset}  "
+            f"{icon_eta} {muted}ETA {self._time(eta)}{reset}"
+        )
+
+        try:
+            width = shutil.get_terminal_size((120, 20)).columns
+            # Strip ANSI when measuring so truncation doesn't cut mid-code.
+            plain = re.sub(r"\x1b\[[0-9;]*m", "", line)
+            if len(plain) > width - 1:
+                line = plain[:max(1, width - 1)]
+        except Exception:
+            pass
+
+        # CR + padding guarantees that old characters are overwritten.
+        pad = " " * 30
+        sys.stdout.write("\r" + line + pad)
+        sys.stdout.flush()
+
+    def add_task(self, description, total=None):
+        self.active = True
+        self.description = str(description or "Download")
+        self.total = float(total or 0)
+        self.completed = 0.0
+        now = time.monotonic()
+        self.last_time = now
+        self.last_bytes = 0.0
+        self.speed = 0.0
+        self.eta = None
+        return self.task_id
+
+    def update(self, task_id, **kwargs):
+        if task_id != self.task_id:
+            return
+
+        if "description" in kwargs:
+            self.description = str(kwargs["description"])
+        if "total" in kwargs:
+            self.total = float(kwargs["total"] or 0)
+        if "completed" in kwargs:
+            self.completed = float(kwargs["completed"] or 0)
+
+        now = time.monotonic()
+        elapsed = now - self.last_time
+        delta = self.completed - self.last_bytes
+        if elapsed >= 0.15 and delta >= 0:
+            instant_speed = delta / elapsed
+            self.speed = instant_speed if self.speed <= 0 else (
+                self.speed * 0.7 + instant_speed * 0.3
+            )
+            self.last_time = now
+            self.last_bytes = self.completed
+
+        if self.total and self.speed > 0:
+            self.eta = max(0, (self.total - self.completed) / self.speed)
+
+        self._render()
+
+    def reset(self, task_id, total=None, completed=0):
+        if task_id != self.task_id:
+            return
+        self.total = float(total or 0)
+        self.completed = float(completed or 0)
+        self.last_bytes = self.completed
+        self.last_time = time.monotonic()
+        self.speed = 0.0
+        self.eta = None
+        self._render()
+
+    def remove_task(self, task_id):
+        if task_id == self.task_id:
+            self.active = False
+
+    def finish(self):
+        if not self.active:
+            return
+        if self.total:
+            self.completed = self.total
+        self._render()
+        # Exactly one newline after the whole download is finished.
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        self.active = False
+
+
+class ProgressHookBridge:
+    """Bridge yt-dlp callbacks to exactly ONE terminal progress line."""
+
+    def __init__(self, progress: SingleLineProgress, ui: UI) -> None:
         self.progress = progress
         self.ui = ui
         self.task_id: Optional[Any] = None
@@ -846,44 +1213,56 @@ class ProgressHookBridge:
 
     @staticmethod
     def _short_name(filename: str) -> str:
-        short_name = Path(filename).name
-        if len(short_name) > 35:
-            short_name = short_name[:32] + "..."
-        return short_name
+        return Path(str(filename or "download")).name
+
+    def _ensure_single_task(self, filename: str, total: float) -> None:
+        if self.task_id is None or self.task_id not in self.progress.task_ids:
+            self.current_key = filename
+            self.task_id = self.progress.add_task(
+                self._short_name(filename),
+                total=total if total else None,
+            )
+            return
+
+        # Filename/stream changes reuse the SAME task and SAME terminal row.
+        if filename != self.current_key:
+            self.current_key = filename
+            self.progress.reset(
+                self.task_id,
+                total=total if total else None,
+                completed=0,
+            )
+            self.progress.update(
+                self.task_id,
+                description=self._short_name(filename),
+                completed=0,
+                total=total if total else None,
+            )
 
     def hook(self, d: Dict[str, Any]) -> None:
-        filename = d.get("filename", "download")
         status = d.get("status")
+        filename = str(d.get("filename") or "download")
 
         if status == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-            downloaded = d.get("downloaded_bytes", 0)
+            downloaded = d.get("downloaded_bytes", 0) or 0
+            self._ensure_single_task(filename, total)
 
-            if self.task_id is None:
-                # First file of this download: create the one and only task.
-                self.current_key = filename
-                self.task_id = self.progress.add_task(
-                    self._short_name(filename), total=total if total else None
+            if self.task_id is not None:
+                self.progress.update(
+                    self.task_id,
+                    completed=downloaded,
+                    total=total if total else None,
                 )
-            elif filename != self.current_key:
-                # A new file started (e.g. switched from video-only stream to
-                # audio-only stream). Reset the SAME line instead of adding
-                # another one.
-                self.current_key = filename
-                self.progress.reset(self.task_id, total=total if total else None)
-                self.progress.update(self.task_id, description=self._short_name(filename))
-
-            if total:
-                self.progress.update(self.task_id, completed=downloaded, total=total)
-            else:
-                self.progress.update(self.task_id, completed=downloaded)
 
         elif status == "finished" and self.task_id is not None:
-            # Snap to 100% so the single line reads as complete before the
-            # next file (if any) resets it.
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
             if total:
-                self.progress.update(self.task_id, completed=total, total=total)
+                self.progress.update(
+                    self.task_id,
+                    completed=total,
+                    total=total,
+                )
 
 
 # =====================================================================
@@ -1451,12 +1830,14 @@ class EngineMaintenance:
         self.ui = ui
 
     def run(self) -> None:
-        self.ui.rule("Engine Maintenance")
-        table = Table(box=box.ROUNDED, show_header=False)
-        table.add_row("1", "Update yt-dlp library")
-        table.add_row("2", "Clear yt-dlp Cache")
-        table.add_row("3", "Clear GVA Cache && Temp Folders")
-        table.add_row("4", "Back")
+        self.ui.rule("🛠️  Engine Maintenance")
+        table = Table(box=box.ROUNDED, show_header=False, border_style=self.ui.theme.style("border"))
+        table.add_column(style=f"bold {self.ui.theme.style('secondary')}", width=4)
+        table.add_column(style=self.ui.theme.style("primary"))
+        table.add_row("1", "⬆️  Update yt-dlp library")
+        table.add_row("2", "🧹 Clear yt-dlp Cache")
+        table.add_row("3", "🗑️  Clear GVA Cache && Temp Folders")
+        table.add_row("4", "↩️  Back")
         self.ui.console.print(table)
 
         choice = Prompt.ask("Select action", choices=["1", "2", "3", "4"], default="1")
@@ -1518,17 +1899,20 @@ class Menu:
     # ---------------------------------------------------------------
     def history_menu(self) -> None:
         while True:
-            self.ui.rule("Download History")
-            table = Table(box=box.ROUNDED, show_header=False)
-            table.add_row("1", "View History")
-            table.add_row("2", "Search History")
-            table.add_row("3", "Open Download Location")
-            table.add_row("4", "Delete History Entry")
-            table.add_row("5", "Clear History")
-            table.add_row("6", "Back")
+            self.ui.rule("🕘  Download History")
+            table = Table(box=box.ROUNDED, show_header=False, border_style=self.ui.theme.style("border"))
+            table.add_column(style=f"bold {self.ui.theme.style('secondary')}", width=4)
+            table.add_column(style=self.ui.theme.style("primary"))
+            table.add_row("1", "📜 View History")
+            table.add_row("2", "🔍 Search History")
+            table.add_row("3", "▶️  Play History Item")
+            table.add_row("4", "📂 Open Download Location")
+            table.add_row("5", "🗑️  Delete History Entry")
+            table.add_row("6", "♻️  Clear History")
+            table.add_row("7", "↩️  Back")
             self.ui.console.print(table)
 
-            choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6"], default="6")
+            choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7"], default="7")
             if choice == "1":
                 self._render_history(self.history.entries)
             elif choice == "2":
@@ -1536,37 +1920,74 @@ class Menu:
                 results = self.history.search(query)
                 self._render_history([e for _, e in results])
             elif choice == "3":
-                Utilities.open_folder(self.settings.get_download_root())
+                self._play_history_entries(self.history.entries)
             elif choice == "4":
+                Utilities.open_folder(self.settings.get_download_root())
+            elif choice == "5":
                 if not self.history.entries:
                     self.ui.info("No download history yet.")
                     continue
                 self._render_history(self.history.entries)
-                idx_str = Prompt.ask("Entry number to delete (0 to cancel)",
-                                      choices=[str(i) for i in range(len(self.history.entries) + 1)], default="0")
+                idx_str = Prompt.ask(
+                    "Entry number to delete (0 to cancel)",
+                    choices=[str(i) for i in range(len(self.history.entries) + 1)],
+                    default="0",
+                )
                 if idx_str != "0":
                     if self.history.delete(int(idx_str) - 1):
                         self.ui.success("Entry deleted.")
-            elif choice == "5":
+            elif choice == "6":
                 if Confirm.ask("Clear entire history?", default=False):
                     self.history.clear()
                     self.ui.success("History cleared.")
             else:
                 return
 
+    def _play_history_entries(self, entries: List[HistoryEntry]) -> None:
+        """Show history, let the user choose one item, and open it in the player."""
+        if not entries:
+            self.ui.info("No download history yet.")
+            return
+
+        self._render_history(entries)
+        choices = [str(i) for i in range(len(entries) + 1)]
+        idx_str = Prompt.ask("Enter entry number to play (0 to cancel)", choices=choices, default="0")
+        if idx_str == "0":
+            return
+
+        entry = entries[int(idx_str) - 1]
+        media_path = Path(entry.output_path).expanduser()
+        if not media_path.exists():
+            self.ui.error(f"Downloaded file is missing: {media_path}")
+            return
+
+        if Utilities.open_file(media_path):
+            self.ui.success(f"Opening in the default media player: {media_path.name}")
+
     def _render_history(self, entries: List[HistoryEntry]) -> None:
         if not entries:
             self.ui.info("No matching history entries.")
             return
-        table = Table(box=box.ROUNDED, border_style=self.ui.theme.style("primary"))
-        table.add_column("#", style="bold")
-        table.add_column("Date")
-        table.add_column("Title")
-        table.add_column("Type")
-        table.add_column("Quality")
-        table.add_column("Output Path", overflow="fold")
+        videos = sum(1 for e in entries if e.type == "video")
+        audios = sum(1 for e in entries if e.type == "audio")
+        table = Table(
+            box=box.ROUNDED, border_style=self.ui.theme.style("border"),
+            title=f"🕘 {len(entries)} item(s)  •  🎬 {videos} video  •  🎵 {audios} audio",
+            title_style=f"bold {self.ui.theme.style('accent')}",
+            caption=f"Root: {self.settings.get_download_root()}",
+            caption_style=self.ui.theme.style("muted"),
+        )
+        table.add_column("#", style="bold", justify="right")
+        table.add_column("Date", style=self.ui.theme.style("muted"))
+        table.add_column("Title", style=self.ui.theme.style("primary"))
+        table.add_column("Type", justify="center")
+        table.add_column("Quality", style=self.ui.theme.style("secondary"))
+        table.add_column("Output Path", overflow="fold", style=self.ui.theme.style("muted"))
         for idx, entry in enumerate(entries, start=1):
-            table.add_row(str(idx), entry.date, entry.title, entry.type, entry.quality, entry.output_path)
+            type_icon = "🎬" if entry.type == "video" else "🎵"
+            row_style = "on grey11" if idx % 2 == 0 else None
+            table.add_row(str(idx), entry.date, entry.title, f"{type_icon} {entry.type}",
+                          entry.quality, entry.output_path, style=row_style)
         self.ui.console.print(table)
 
     # ---------------------------------------------------------------
@@ -1574,15 +1995,17 @@ class Menu:
     # ---------------------------------------------------------------
     def settings_menu(self) -> None:
         while True:
-            self.ui.rule("Settings")
-            table = Table(box=box.ROUNDED, show_header=False)
-            table.add_row("1. Download Folder", str(self.settings.get_download_root()))
-            table.add_row("2. Video Quality", self.settings.data.default_video_quality)
-            table.add_row("3. Audio Quality", self.settings.data.default_audio_quality)
-            table.add_row("4. Theme", self.settings.data.theme)
-            table.add_row("5. Overwrite Existing Files", str(self.settings.data.overwrite_existing))
-            table.add_row("6. Reset Settings", "")
-            table.add_row("7. Back", "")
+            self.ui.rule("⚙️  Settings")
+            table = Table(box=box.ROUNDED, show_header=False, border_style=self.ui.theme.style("border"))
+            table.add_column(style=f"bold {self.ui.theme.style('secondary')}")
+            table.add_column(style=self.ui.theme.style("primary"))
+            table.add_row("1.  📂 Download Folder", str(self.settings.get_download_root()))
+            table.add_row("2.  🎬 Video Quality", self.settings.data.default_video_quality)
+            table.add_row("3.  🎵 Audio Quality", self.settings.data.default_audio_quality)
+            table.add_row("4.  🎨 Theme", f"{self.ui.theme.emoji} {self.ui.theme.label}")
+            table.add_row("5.  ♻️  Overwrite Existing Files", str(self.settings.data.overwrite_existing))
+            table.add_row("6.  🔄 Reset Settings", "")
+            table.add_row("7.  ↩️  Back", "")
             self.ui.console.print(table)
 
             choice = Prompt.ask("Setting choice", choices=[str(i) for i in range(1, 8)], default="7")
@@ -1606,11 +2029,23 @@ class Menu:
                 self.settings.save()
                 self.ui.success("Default audio quality updated.")
             elif choice == "4":
-                t = Prompt.ask("Theme", choices=list(Theme.THEMES.keys()), default="default")
+                preview = Table(title="🎨 Available Themes", box=box.ROUNDED, show_header=True,
+                                 border_style=self.ui.theme.style("border"))
+                preview.add_column("Theme", style="bold")
+                preview.add_column("Preview")
+                for key, meta in Theme.THEMES.items():
+                    swatch_text = Text()
+                    for i, color in enumerate(meta.get("swatch", [])):
+                        swatch_text.append("████ ", style=color)
+                    marker = " (current)" if key == self.ui.theme.name else ""
+                    preview.add_row(f"{meta.get('emoji', '🎨')} {meta.get('label', key)}{marker}", swatch_text)
+                self.ui.console.print(preview)
+
+                t = Prompt.ask("Theme", choices=list(Theme.THEMES.keys()), default=self.ui.theme.name)
                 self.settings.data.theme = t
                 self.ui.theme = Theme(t)
                 self.settings.save()
-                self.ui.success("Theme updated.")
+                self.ui.success(f"Theme updated to {self.ui.theme.emoji} {self.ui.theme.label}.")
             elif choice == "5":
                 self.settings.data.overwrite_existing = Confirm.ask("Overwrite existing files?", default=False)
                 self.settings.save()
@@ -1623,23 +2058,32 @@ class Menu:
                 return
 
     def show_help(self) -> None:
-        self.ui.rule("Help & Info")
+        self.ui.rule("❓  Help & Info")
         self.ui.panel(
-            "• Video Download: Provides real-time dynamic quality options extracted from the video link.\n"
-            "• Playlist Download: Supports downloading full playlists as Video OR Audio (MP3/FLAC/M4A).\n"
-            "• YouTube Search: Search keywords directly without opening a browser.\n"
-            "• Direct URL: python gva_downloader.py \"<url>\" opens a quick download menu.\n"
-            "• Engine Maintenance: Keep yt-dlp updated to prevent extraction failures.",
+            "🎬 [bold]Video Download[/bold] — real-time dynamic quality options extracted from the link.\n"
+            "📜 [bold]Playlist Download[/bold] — full playlists as Video OR Audio (MP3/FLAC/M4A).\n"
+            "🔍 [bold]YouTube Search[/bold] — search keywords directly without opening a browser.\n"
+            "🔗 [bold]Direct URL[/bold] — python gva_downloader.py \"<url>\" opens a quick download menu.\n"
+            "▶️  [bold]History[/bold] — select 'Play History Item' to open any download in your default player.\n"
+            "🛠️  [bold]Engine Maintenance[/bold] — keep yt-dlp updated to prevent extraction failures.\n"
+            "🎨 [bold]Themes[/bold] — pick a look that fits you in Settings → Theme.",
             title="💡 Hints & Features",
         )
 
     def show_about(self) -> None:
-        self.ui.rule("About")
-        self.ui.panel(
-            f"GVA Downloader v{APP_VERSION}\nAuthor: {APP_AUTHOR}\nPlatform: {APP_PLATFORM}\n"
-            f"Engine: {APP_ENGINE}\nApp Folder: {APP_DIR}",
-            title="📖 About App",
-        )
+        self.ui.rule("📖  About")
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(justify="right", style=f"bold {self.ui.theme.style('secondary')}")
+        grid.add_column(justify="left", style=self.ui.theme.style("primary"))
+        grid.add_row("App", f"{self.ui.theme.emoji} GVA Downloader v{APP_VERSION}")
+        grid.add_row("Author", APP_AUTHOR)
+        grid.add_row("Platform", APP_PLATFORM)
+        grid.add_row("Engine", APP_ENGINE)
+        grid.add_row("Language", APP_LANGUAGE)
+        grid.add_row("Theme", self.ui.theme.label)
+        grid.add_row("App Folder", str(APP_DIR))
+        self.ui.console.print(Panel(Align.center(grid), title="📖 About App",
+                                     border_style=self.ui.theme.style("border"), box=box.ROUNDED, padding=(1, 2)))
 
 
 class Application:
@@ -1667,7 +2111,7 @@ class Application:
         while self.running:
             try:
                 self.ui.clear()
-                self.ui.show_logo()
+                self.ui.show_logo(self.settings, self.history)
                 self.ui.console.print(self.ui.main_menu())
                 choice = Prompt.ask("Select an option", choices=[str(i) for i in range(1, 13)], show_choices=False)
 
@@ -1698,7 +2142,11 @@ class Application:
                 elif choice == "11":
                     self.menu.show_about()
                 elif choice == "12":
-                    self.ui.panel("Thank you for using GVA Downloader! 👋")
+                    self.ui.panel(
+                        f"Thank you for using {self.ui.theme.emoji} GVA Downloader! 👋\n"
+                        f"Your downloads live in: {self.settings.get_download_root()}",
+                        title="👋 Goodbye",
+                    )
                     self.running = False
 
             except KeyboardInterrupt:
@@ -1741,23 +2189,27 @@ def handle_direct_url(url: str) -> None:
         return
 
     ui.console.print(Panel(
-        Align.center(Text.from_markup(f"[bold cyan]{APP_NAME}[/bold cyan]\n\n[bold]URL detected[/bold]")),
-        box=box.DOUBLE, border_style=ui.theme.style("primary"),
+        Align.center(Text.from_markup(
+            f"[bold {ui.theme.style('primary')}]{ui.theme.emoji} {APP_NAME}[/]\n\n[bold]🔗 URL detected[/bold]"
+        )),
+        box=box.DOUBLE_EDGE, border_style=ui.theme.style("border"),
     ))
 
     info_fetcher = VideoInfo(ui)
-    with ui.console.status("[bold cyan]Fetching title..."):
+    with ui.console.status(f"[bold {ui.theme.style('primary')}]Fetching title..."):
         info = info_fetcher.extract(url)
 
     title = str(info.get("title", "Unknown")) if info else "Unknown"
     ui.console.print(f"\n[bold]🎬 Title:[/bold]\n{title}\n")
 
-    table = Table(box=box.ROUNDED, show_header=False)
-    table.add_row("1", "Download Video")
-    table.add_row("2", "Download Audio")
-    table.add_row("3", "Download Best Quality")
-    table.add_row("4", "View Information")
-    table.add_row("5", "Cancel")
+    table = Table(box=box.ROUNDED, show_header=False, border_style=ui.theme.style("border"))
+    table.add_column(style=f"bold {ui.theme.style('secondary')}", width=4)
+    table.add_column(style=ui.theme.style("primary"))
+    table.add_row("1", "🎬 Download Video")
+    table.add_row("2", "🎵 Download Audio")
+    table.add_row("3", "🏆 Download Best Quality")
+    table.add_row("4", "ℹ️  View Information")
+    table.add_row("5", "🚪 Cancel")
     ui.console.print(table)
 
     choice = Prompt.ask("Choose", choices=["1", "2", "3", "4", "5"], default="1")
