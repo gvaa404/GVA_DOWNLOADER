@@ -1469,19 +1469,63 @@ class BaseDownloader:
         self.history = history
         self.back = BackAsk(ui)
 
-    def check_ffmpeg(self) -> bool:
-        if Utilities.which("ffmpeg") is None:
-            self.ui.error("FFmpeg is not installed.")
-            if sys.platform.startswith("win"):
-                self.ui.info("Install FFmpeg on Windows: download from https://ffmpeg.org/download.html "
-                              "and add its 'bin' folder to your PATH.")
-            elif shutil.which("termux-info") or "com.termux" in os.environ.get("PREFIX", ""):
-                self.ui.info("Install FFmpeg on Termux: pkg install ffmpeg")
-            else:
-                self.ui.info("Install FFmpeg with your package manager, e.g. 'sudo apt install ffmpeg' "
-                              "or 'brew install ffmpeg'.")
+    FFMPEG_GUIDE_URL = (
+        "https://github.com/gvaa404/GVA_DOWNLOADER/blob/main/"
+        "gva_downloader_v2_ffmpeg_installation_guide.pdf"
+    )
+
+    def has_ffmpeg(self) -> bool:
+        """Return True when the FFmpeg executable is available on PATH."""
+        return Utilities.which("ffmpeg") is not None
+
+    def show_ffmpeg_warning(self, purpose: str = "this operation") -> bool:
+        """Show the FFmpeg warning and optionally allow a no-FFmpeg path.
+
+        Returns True when FFmpeg is available. When it is missing, the user
+        can choose to continue only for operations that explicitly support a
+        no-FFmpeg fallback (currently video downloads).
+        """
+        if self.has_ffmpeg():
+            return True
+
+        self.ui.warning("FFmpeg is not installed.")
+        self.ui.panel(
+            "FFmpeg is optional for direct/combined video downloads, but it is "
+            "required for merging separate video + audio streams and for audio "
+            "conversion/processing.\n\n"
+            f"Installation Guide:\n{self.FFMPEG_GUIDE_URL}\n\n"
+            "If you continue without FFmpeg, GVA will download the best "
+            "available format that already contains BOTH video and audio. "
+            "The absolute highest resolution may be unavailable when a site "
+            "provides video and audio as separate streams.",
+            title="⚠ FFmpeg Not Installed",
+            style=self.ui.theme.style("warning"),
+        )
+
+        try:
+            answer = self.back.confirm(
+                f"Continue {purpose} without FFmpeg?",
+                default=True,
+            )
+        except GoBack:
             return False
-        return True
+
+        if not answer:
+            self.ui.info("Cancelled. Install FFmpeg using the guide and try again.")
+        return answer
+
+    def check_ffmpeg(self) -> bool:
+        """Require FFmpeg for operations that cannot work without it."""
+        if self.has_ffmpeg():
+            return True
+
+        self.ui.error("FFmpeg is required for this operation.")
+        self.ui.panel(
+            f"Please install FFmpeg first.\n\nInstallation Guide:\n{self.FFMPEG_GUIDE_URL}",
+            title="🧩 Install FFmpeg",
+            style=self.ui.theme.style("warning"),
+        )
+        return False
 
     def default_output_folder(self) -> Path:
         """Return downloads/videos or downloads/audios based on media_kind."""
@@ -1587,6 +1631,9 @@ class Downloader(BaseDownloader):
         if info is None:
             return
 
+        if not self.has_ffmpeg():
+            self.ui.warning("No-FFmpeg mode: GVA will download the best single format that already contains video + audio.")
+
         try:
             label, height = self.ask_dynamic_quality(info)
             subtitles = self.back.confirm("Download subtitles?", default=False)
@@ -1598,8 +1645,20 @@ class Downloader(BaseDownloader):
             self.ui.info("Went back — download cancelled, no changes made.")
             return
 
-        if embed_thumbnail or embed_metadata or sponsorblock:
-            if not self.check_ffmpeg():
+        ffmpeg_available = self.has_ffmpeg()
+
+        # Metadata, thumbnail embedding and SponsorBlock post-processing all
+        # depend on FFmpeg in this application. In no-FFmpeg mode we disable
+        # those extras instead of failing the video download.
+        if not ffmpeg_available and (embed_thumbnail or embed_metadata or sponsorblock):
+            self.ui.warning("Selected processing options require FFmpeg.")
+            self.ui.info("Those options will be skipped for this no-FFmpeg download.")
+            embed_thumbnail = False
+            embed_metadata = False
+            sponsorblock = False
+
+        if not ffmpeg_available:
+            if not self.show_ffmpeg_warning("the video download"):
                 return
 
         title = str(info.get("title", "video"))
@@ -1607,7 +1666,26 @@ class Downloader(BaseDownloader):
         if stem is None:
             return
 
-        fmt = "bestvideo+bestaudio/best" if height is None else f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+        if ffmpeg_available:
+            fmt = (
+                "bestvideo+bestaudio/best"
+                if height is None
+                else f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+            )
+        else:
+            # No-FFmpeg fallback: choose a single format that already has
+            # both video and audio, so yt-dlp can save it directly.
+            if height is None:
+                fmt = "best[acodec!=none][vcodec!=none]/best"
+            else:
+                fmt = (
+                    f"best[height<={height}][acodec!=none][vcodec!=none]/"
+                    f"best[acodec!=none][vcodec!=none]/best"
+                )
+
+        # Subtitle files can still be downloaded without FFmpeg, but embedding
+        # them into the final media file requires FFmpeg in the current design.
+        embed_subtitles = subtitles and ffmpeg_available
 
         outtmpl = str(output_folder / f"{stem}.%(ext)s")
         postprocessors: List[Dict[str, Any]] = []
@@ -1631,12 +1709,12 @@ class Downloader(BaseDownloader):
         opts: Dict[str, Any] = {
             "format": fmt,
             "outtmpl": outtmpl,
-            "merge_output_format": "mp4",
+            **({"merge_output_format": "mp4"} if ffmpeg_available else {}),
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
             "writesubtitles": subtitles,
-            "embedsubtitles": subtitles,
+            "embedsubtitles": embed_subtitles,
             "postprocessors": postprocessors,
             "overwrites": True,  # duplicate handling is already resolved above
             "cachedir": str(CACHE_DIR),
@@ -1855,13 +1933,28 @@ class PlaylistDownloader(BaseDownloader):
             self._process_playlist_loop(entries, selected_indices, opts, f"Audio ({bitrate}k)", "audio", fmt_choice)
 
         else:  # Video download
+            ffmpeg_available = self.has_ffmpeg()
+            if not ffmpeg_available:
+                if not self.show_ffmpeg_warning("the playlist video download"):
+                    return
+
             quality = Prompt.ask("Preferred max video quality", choices=["1080", "720", "480", "best"], default="best")
-            fmt = "bestvideo+bestaudio/best" if quality == "best" else f"bestvideo[height<={quality}]+bestaudio/best"
+
+            if ffmpeg_available:
+                fmt = "bestvideo+bestaudio/best" if quality == "best" else f"bestvideo[height<={quality}]+bestaudio/best"
+            else:
+                # Direct-download fallback: no merge, so require a format that
+                # already contains both video and audio.
+                fmt = (
+                    "best[acodec!=none][vcodec!=none]/best"
+                    if quality == "best"
+                    else f"best[height<={quality}][acodec!=none][vcodec!=none]/best[acodec!=none][vcodec!=none]/best"
+                )
 
             opts = {
                 "format": fmt,
                 "outtmpl": str(output_folder / "%(playlist_index)s - %(title)s.%(ext)s"),
-                "merge_output_format": "mp4",
+                **({"merge_output_format": "mp4"} if ffmpeg_available else {}),
                 "quiet": True,
                 "overwrites": self.settings.data.overwrite_existing,
                 "cachedir": str(CACHE_DIR),
@@ -1893,10 +1986,18 @@ class PlaylistDownloader(BaseDownloader):
                         if info:
                             success += 1
                             filename = ydl.prepare_filename(info)
+                            output_path = Path(filename)
+                            if media_type == "video" and not output_path.exists():
+                                for ext in (".mp4", ".mkv", ".webm"):
+                                    candidate = output_path.with_suffix(ext)
+                                    if candidate.exists():
+                                        output_path = candidate
+                                        break
+                            actual_ext = output_path.suffix.lstrip(".") or fmt
                             self.history.add(
                                 title=title, url=str(entry_url), website="Playlist",
-                                media_type=media_type, quality=label, fmt=fmt,
-                                output_path=filename,
+                                media_type=media_type, quality=label, fmt=actual_ext,
+                                output_path=str(output_path),
                             )
                 except Exception as exc:
                     self.ui.error(f"Failed item {i}: {YtDlpErrorTranslator.translate(exc)}")
@@ -2292,7 +2393,8 @@ class Application:
             if not statuses["yt-dlp"]:
                 self.ui.error("yt-dlp is required. Install it with: pip install -U yt-dlp")
             if not statuses["FFmpeg"]:
-                self.ui.warning("FFmpeg is required for video merging/audio conversion/thumbnail embedding.")
+                self.ui.warning("FFmpeg is optional for direct video downloads, but required for merging, audio conversion, and media processing.")
+                self.ui.info("Guide: https://github.com/gvaa404/GVA_DOWNLOADER/blob/main/gva_downloader_v2_ffmpeg_installation_guide.pdf")
             self.ui.press_enter()
 
     def main_loop(self) -> None:
