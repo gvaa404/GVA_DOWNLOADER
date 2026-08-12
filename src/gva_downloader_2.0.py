@@ -143,6 +143,24 @@ LOGO = LOGO_ART
 
 AUDIO_FORMATS = ["MP3", "M4A", "AAC", "FLAC", "OGG", "WAV"]
 
+# ---------------------------------------------------------------------
+# DOWNLOAD PERFORMANCE TUNING
+# ---------------------------------------------------------------------
+# Applied to every real (non-info-only) yt-dlp download. Fragmented
+# streams (the DASH/HLS formats most sites — including YouTube — serve)
+# download noticeably faster when several fragments are pulled at once
+# instead of one at a time, and a larger HTTP chunk size cuts down on
+# request overhead for plain progressive files.
+CONCURRENT_FRAGMENT_DOWNLOADS = 4
+HTTP_CHUNK_SIZE = 10 * 1024 * 1024  # 10 MiB
+SOCKET_TIMEOUT = 15  # seconds; fail fast on a stalled connection instead of hanging
+
+DOWNLOAD_PERF_OPTS: Dict[str, Any] = {
+    "concurrent_fragment_downloads": CONCURRENT_FRAGMENT_DOWNLOADS,
+    "http_chunk_size": HTTP_CHUNK_SIZE,
+    "socket_timeout": SOCKET_TIMEOUT,
+}
+
 # Windows reserved device names that are unsafe as filenames.
 WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
@@ -734,7 +752,7 @@ class UI:
         self.console.print(Align.center(info))
         self.console.print()
 
-    def splash(self, seconds: float = 1.1) -> None:
+    def splash(self, seconds: float = 0.6) -> None:
         """A short animated welcome shown once at startup so the app feels
         alive rather than dumping the menu instantly."""
         self.clear()
@@ -756,7 +774,7 @@ class UI:
         except (KeyboardInterrupt, EOFError):
             raise
         self.success("GVA Downloader is ready.")
-        time.sleep(0.25)
+        time.sleep(0.12)
 
     # -----------------------------------------------------------------
     # MESSAGES / PANELS
@@ -1623,6 +1641,7 @@ class Downloader(BaseDownloader):
             "overwrites": True,  # duplicate handling is already resolved above
             "cachedir": str(CACHE_DIR),
             "paths": {"temp": str(TEMP_DIR)},
+            **DOWNLOAD_PERF_OPTS,
         }
 
         with self.ui.build_progress() as progress:
@@ -1724,6 +1743,7 @@ class AudioDownloader(BaseDownloader):
             "overwrites": True,  # duplicate handling is already resolved above
             "cachedir": str(CACHE_DIR),
             "paths": {"temp": str(TEMP_DIR)},
+            **DOWNLOAD_PERF_OPTS,
         }
 
         with self.ui.build_progress() as progress:
@@ -1829,6 +1849,7 @@ class PlaylistDownloader(BaseDownloader):
                 "overwrites": self.settings.data.overwrite_existing,
                 "cachedir": str(CACHE_DIR),
                 "paths": {"temp": str(TEMP_DIR)},
+                **DOWNLOAD_PERF_OPTS,
             }
 
             self._process_playlist_loop(entries, selected_indices, opts, f"Audio ({bitrate}k)", "audio", fmt_choice)
@@ -1845,6 +1866,7 @@ class PlaylistDownloader(BaseDownloader):
                 "overwrites": self.settings.data.overwrite_existing,
                 "cachedir": str(CACHE_DIR),
                 "paths": {"temp": str(TEMP_DIR)},
+                **DOWNLOAD_PERF_OPTS,
             }
 
             self._process_playlist_loop(entries, selected_indices, opts, f"Video ({quality}p)", "video", "mp4")
@@ -2403,6 +2425,7 @@ def handle_direct_url(url: str) -> None:
             "overwrites": True,
             "cachedir": str(CACHE_DIR),
             "paths": {"temp": str(TEMP_DIR)},
+            **DOWNLOAD_PERF_OPTS,
         }
         with ui.build_progress() as progress:
             bridge = ProgressHookBridge(progress, ui)
