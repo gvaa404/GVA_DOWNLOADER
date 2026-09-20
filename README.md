@@ -1,4 +1,4 @@
-# GVA Downloader v2.0
+# GVA Downloader v2.1
 
 A polished, terminal-based media downloader built on [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [Rich](https://github.com/Textualize/rich). Fully **portable** — everything the app owns lives inside its own folder, and it runs the same way on **Windows, Linux, macOS, and Android (Termux)**.
 
@@ -22,45 +22,137 @@ A polished, terminal-based media downloader built on [yt-dlp](https://github.com
 - [FFmpeg](https://ffmpeg.org/) (for merging video/audio, converting audio formats, embedding thumbnails)
 - Python packages: `yt-dlp`, `rich`
 
+## Linux Installation
+
+### One-command installer
+
+For Linux Mint, Ubuntu, Debian, and compatible Debian-based systems:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gvaa404/GVA_DOWNLOADER/main/install_linux.sh | bash
+```
+
+Then start GVA:
+
+```bash
+gvad
+```
+
+Management commands:
+
+```bash
+gvad --version
+gvad --help
+gvad --uninstall
+```
+
+### Manual installation
+
+```bash
+git clone https://github.com/gvaa404/GVA_DOWNLOADER.git "GVA Downloader"
+cd "GVA Downloader"
+bash install_linux.sh
+```
+
+The Linux installer checks for Python, Python virtual-environment support, and FFmpeg, installs missing system packages, creates GVA's isolated Python environment, and installs the `gvad` command.
+
+## Installer Files
+
+The repository includes installers for:
+
+- Linux: [`install_linux.sh`](./install_linux.sh)
+- Windows Batch: [`install_windows.bat`](./install_windows.bat)
+- Windows PowerShell: [`install_windows.ps1`](./install_windows.ps1)
+- Android / Termux: [`install_termux.sh`](./install_termux.sh)
+
 ## Windows Installation
 
-```bat
-git clone <repository-url> "GVA Downloader"
+### One-command PowerShell installer
+
+Open PowerShell and run:
+
+```powershell
+irm https://raw.githubusercontent.com/gvaa404/GVA_DOWNLOADER/main/install_windows.ps1 | iex
+```
+
+After installation, open a new PowerShell or Command Prompt window and run:
+
+```powershell
+gvad
+```
+
+Management commands:
+
+```powershell
+gvad --version
+gvad --help
+gvad --uninstall
+```
+
+### Double-click installer
+
+Download [`install_windows.bat`](./install_windows.bat) and double-click it.
+
+The `.bat` installer launches the PowerShell installer and completes the same setup.
+
+### Manual installation
+
+```powershell
+git clone https://github.com/gvaa404/GVA_DOWNLOADER.git "GVA Downloader"
 cd "GVA Downloader"
-install_windows.bat
-```
-
-Or manually:
-
-```bat
 python -m pip install -U yt-dlp rich
-python gva_downloader.py
+python src\gva_downloader_2.1.py
 ```
 
-Install FFmpeg on Windows by downloading a build from https://ffmpeg.org/download.html and adding its `bin` folder to your system PATH.
+FFmpeg is required. The Windows installer checks for it and installs it with WinGet when it is missing.
 
 ## Termux Installation
 
+### One-command installer
+
+Run:
+
 ```bash
-pkg install git -y
-git clone <repository-url> "GVA Downloader"
+bash <(curl -fsSL https://raw.githubusercontent.com/gvaa404/GVA_DOWNLOADER/main/install_termux.sh)
+```
+
+Then start GVA:
+
+```bash
+gvad
+```
+
+Management commands:
+
+```bash
+gvad --version
+gvad --help
+gvad --uninstall
+```
+
+### Manual installation
+
+```bash
+pkg install git python ffmpeg -y
+git clone https://github.com/gvaa404/GVA_DOWNLOADER.git "GVA Downloader"
 cd "GVA Downloader"
 bash install_termux.sh
 ```
 
-Or manually:
-
-```bash
-pkg install python ffmpeg -y
-pip install -U yt-dlp rich
-termux-setup-storage
-python gva_downloader.py
-```
+The installer also requests Android storage access and can configure the YouTube → Termux → GVA share workflow.
 
 ## First Run
 
+After using an installer, start GVA with:
+
 ```bash
-python gva_downloader.py
+gvad
+```
+
+For a manual/source checkout, you can run:
+
+```bash
+python src/gva_downloader_2.1.py
 ```
 
 On first run GVA automatically creates everything it needs inside the application folder:
@@ -79,10 +171,16 @@ No manual setup is required.
 
 ## Normal Usage
 
-Just run the script and use the on-screen menu:
+After installation, run the `gvad` command and use the on-screen menu:
 
 ```bash
-python gva_downloader.py
+gvad
+```
+
+For a manual/source checkout:
+
+```bash
+python src/gva_downloader_2.1.py
 ```
 
 ```
@@ -105,8 +203,8 @@ python gva_downloader.py
 Pass a URL straight from the command line and skip the main menu:
 
 ```bash
-python gva_downloader.py "https://www.youtube.com/watch?v=XXXXXXXXXXX"
-python gva_downloader.py --url "https://youtu.be/XXXXXXXXXXX"
+gvad "https://www.youtube.com/watch?v=XXXXXXXXXXX"
+gvad --url "https://youtu.be/XXXXXXXXXXX"
 ```
 
 This opens a quick menu:
@@ -122,12 +220,12 @@ This opens a quick menu:
 Other quick command-line options:
 
 ```bash
-python gva_downloader.py --video URL      # jump straight to a video-quality prompt
-python gva_downloader.py --audio URL      # jump straight to an audio-format prompt
-python gva_downloader.py --info URL       # show media info only, no download
-python gva_downloader.py --history        # print download history and exit
-python gva_downloader.py --settings       # open the settings menu and exit
-python gva_downloader.py --help           # show all options
+gvad --video URL      # jump straight to a video-quality prompt
+gvad --audio URL      # jump straight to an audio-format prompt
+gvad --info URL       # show media info only, no download
+gvad --history        # print download history and exit
+gvad --settings       # open the settings menu and exit
+gvad --help           # show all options
 ```
 
 Supported URL forms include standard YouTube links, `youtu.be` short links, and YouTube Shorts — anything yt-dlp's extractor system recognizes.
@@ -171,11 +269,20 @@ Application data (`config/`, `history/`, `logs/`, `cache/`, `temp/`) **always** 
 ## Folder Structure
 
 ```
-GVA Downloader/
+GVA_DOWNLOADER/
 │
-├── gva_downloader.py
+├── src/
+│   └── gva_downloader_2.1.py
+│
+├── img/
+│
 ├── README.md
+├── LICENSE
+├── requirements.txt
+│
+├── install_linux.sh
 ├── install_windows.bat
+├── install_windows.ps1
 ├── install_termux.sh
 │
 ├── downloads/
@@ -195,7 +302,7 @@ GVA Downloader/
 └── temp/
 ```
 
-Copy the entire `GVA Downloader` folder to another machine or another location, and your settings, history, and logs travel with it — nothing is stored outside this folder.
+Copy the entire GVA application folder to another location, and its settings, history, and logs travel with it. Installed copies using `gvad` keep their application data inside GVA's installation directory.
 
 ## Updating yt-dlp
 
@@ -208,6 +315,22 @@ pip install -U yt-dlp
 ```
 
 Update yt-dlp regularly — YouTube and other sites change frequently, and an outdated yt-dlp is the most common cause of extraction failures.
+
+## Uninstall
+
+For an installed copy of GVA Downloader:
+
+```bash
+gvad --uninstall
+```
+
+On Windows the same command works from PowerShell or Command Prompt:
+
+```powershell
+gvad --uninstall
+```
+
+The uninstall process removes GVA's installed application files and launcher without removing system Python, FFmpeg, or unrelated applications.
 
 ## Troubleshooting
 

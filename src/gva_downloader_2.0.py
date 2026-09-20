@@ -2608,7 +2608,66 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--info", dest="info_url", default=None, help="Show media information for URL only.")
     parser.add_argument("--history", action="store_true", help="Print download history and exit.")
     parser.add_argument("--settings", action="store_true", help="Open the settings menu and exit.")
+    parser.add_argument("--version", "-v", action="store_true", help="Show GVA Downloader version and exit.")
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="Uninstall GVA Downloader from its current application folder and exit.",
+    )
     return parser
+
+
+def uninstall_gva() -> None:
+    """Safely remove the portable GVA application folder.
+
+    The current GVA design keeps application data and the default downloads
+    folder inside APP_DIR. To avoid silently deleting the user's downloaded
+    media, move the downloads folder outside APP_DIR before removing the
+    application. A custom download folder is never touched.
+    """
+    app_dir = APP_DIR.resolve()
+    downloads_dir = DEFAULT_DOWNLOADS_DIR.resolve()
+
+    console.print()
+    console.print("[bold cyan]GVA Downloader Uninstaller[/]")
+    console.print("=" * 50)
+    console.print(f"Application folder: {app_dir}")
+
+    if not app_dir.exists():
+        console.print("[yellow]GVA Downloader is already uninstalled.[/]")
+        return
+
+    # Preserve the default downloaded media before removing APP_DIR.
+    if downloads_dir.exists():
+        preserved_dir = Path.home() / "GVA-Downloads"
+        try:
+            if preserved_dir.exists():
+                console.print(
+                    f"[yellow]Cannot safely preserve downloads because this folder already exists:[/]"
+                )
+                console.print(f"  {preserved_dir}")
+                console.print("[yellow]Uninstall cancelled. No files were removed.[/]")
+                return
+
+            shutil.move(str(downloads_dir), str(preserved_dir))
+            console.print(f"[green]Downloads preserved at:[/] {preserved_dir}")
+        except Exception as exc:
+            console.print(f"[bold red]Could not preserve downloads: {exc}[/]")
+            console.print("[yellow]Uninstall cancelled. No application files were removed.[/]")
+            return
+
+    # Do not remove a directory outside APP_DIR. This protects custom
+    # download locations selected through Settings.
+    try:
+        shutil.rmtree(app_dir)
+    except Exception as exc:
+        console.print(f"[bold red]Uninstall failed: {exc}[/]")
+        console.print("[yellow]Your preserved downloads were not deleted.[/]")
+        sys.exit(1)
+
+    console.print("[bold green]GVA Downloader has been uninstalled.[/]")
+    console.print("[dim]System Python, FFmpeg, and system/user yt-dlp were not removed.[/]")
+    console.print()
 
 
 def main() -> None:
@@ -2616,6 +2675,14 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
+        if args.version:
+            print(f"{APP_NAME} v{APP_VERSION}")
+            return
+
+        if args.uninstall:
+            uninstall_gva()
+            return
+
         if args.video_url:
             quick_video(args.video_url)
         elif args.audio_url:
